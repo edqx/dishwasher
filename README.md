@@ -21,7 +21,7 @@ const register = ownedDocument.doc.root.elementByTagName("registry") orelse unre
 const typesSet = register.elementByTagName("extensions") orelse unreachable;
 const t = typesSet.elementByAttributeValue("name", "GL_EXT_direct_state_access") orelse unreachable;
 
-try std.io.getStdout().writer().print("comment: {s}", .{t.attributeValueByName("comment") orelse unreachable});
+try std.io.getStdOut().writer().print("comment: {s}", .{t.attributeValueByName("comment") orelse unreachable});
 ```
 
 #### API

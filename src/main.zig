@@ -531,6 +531,19 @@ pub const Document = struct {
                                 return AstError.InvalidClosingTag;
                             }
 
+                            if (try self.consumeMaybe(.instruction)) |_| { // cba parsing instructions right now lol!
+                                const tagName = try self.consume(.ident);
+                                _ = tagName;
+                                // var attributes = std.ArrayList(Node.Element.Attribute).init(self.allocator);
+                                while (try self.buildAttribute()) |attr| {
+                                    // try attributes.append(attr);
+                                    _ = attr;
+                                }
+                                _ = try self.consume(.instruction);
+                                _ = try self.consume(.close_elem);
+                                continue;
+                            }
+
                             var element = try self.buildInnerTag();
                             if (!element.is_single) {
                                 element.children = try self.buildChildren(element.tagName);
