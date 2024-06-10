@@ -573,11 +573,15 @@ pub const Document = struct {
             children: []Node,
 
             pub fn attributeValueByName(self: Element, name: []const u8) ?[]const u8 {
-                return for (self.attributes) |attr| {
-                    if (std.mem.eql(u8, attr.name, name)) {
-                        break attr.value;
+                return for (self.attributes) |_attr| {
+                    if (std.mem.eql(u8, _attr.name, name)) {
+                        break _attr.value;
                     }
                 } else null;
+            }
+
+            pub fn attr(self: Element, name: []const u8) ?[]const u8 {
+                return self.attributeValueByName(name);
             }
 
             pub fn elementByTagName(self: Element, tagName: []const u8) ?Element {
@@ -593,7 +597,11 @@ pub const Document = struct {
                 } else null;
             }
 
-            pub fn elementsByTagName(self: Element, allocator: std.mem.Allocator, tagName: []const u8) ![]Element {
+            pub fn elem(self: Element, tagName: []const u8) ?Element {
+                return self.elementByTagName(tagName);
+            }
+
+            pub fn elementsByTagNameAlloc(self: Element, allocator: std.mem.Allocator, tagName: []const u8) ![]Element {
                 if (self.is_single or self.children.len == 0) return &.{};
                 var arr = std.ArrayList(Element).init(allocator);
                 for (self.children) |node| {
@@ -607,6 +615,10 @@ pub const Document = struct {
                     }
                 }
                 return try arr.toOwnedSlice();
+            }
+
+            pub fn elemsAlloc(self: Element, allocator: std.mem.Allocator, tagName: []const u8) ![]Element {
+                return self.elementsByTagNameAlloc(allocator, tagName);
             }
 
             pub fn elementByAttributeValue(self: Element, attributeName: []const u8, attributeValue: []const u8) ?Element {
@@ -623,7 +635,7 @@ pub const Document = struct {
                 } else null;
             }
 
-            pub fn textContent(self: Element, allocator: std.mem.Allocator) ![]const u8 {
+            pub fn textAlloc(self: Element, allocator: std.mem.Allocator) ![]const u8 {
                 var arr = std.ArrayList(u8).init(allocator);
                 for (self.children) |node| {
                     switch (node) {
@@ -858,7 +870,7 @@ pub fn populateXmlValueTypeShapeImpl(comptime T: type, comptime shape: *const Sh
             if (resolvedTypeInfo == null or resolvedTypeInfo.? != .Pointer or resolvedTypeInfo.?.Pointer.size != .Slice)
                 @compileError("Cannot populate type " ++ @typeName(T) ++ " with many elements. Hint: type must be a slice");
 
-            const filtered = try element.elementsByTagName(allocator, manyShape.tagName);
+            const filtered = try element.elementsByTagNameAlloc(allocator, manyShape.tagName);
             val.* = try allocator.alloc(resolvedTypeInfo.?.Pointer.child, filtered.len);
             errdefer allocator.free(val.*);
             for (0.., filtered) |i, elem| {
@@ -882,7 +894,7 @@ pub fn populateXmlValueTypeShapeImpl(comptime T: type, comptime shape: *const Sh
         },
         .content => {
             if (T != []const u8 and T != ?[]const u8) @compileError("Cannot populate type " ++ @typeName(T) ++ " with element content. Hint: type must be '[]const u8'");
-            val.* = try element.textContent(allocator);
+            val.* = try element.textAlloc(allocator);
         },
     }
 }

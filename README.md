@@ -54,10 +54,19 @@ pub const Node = union {
         children: []Node,
 
         pub fn attributeValueByName(self: Element, name: []const u8) ?[]const u8;
+        // or
+        pub fn attr(self: Element, name: []const u8) ?[]const u8;
+
         pub fn elementByTagName(self: Element, tagName: []const u8) ?Element;
-        pub fn elementsByTagName(self: Element, allocator: std.mem.Allocator, tagName: []const u8) ![]Element;
+        // or
+        pub fn elem(self: Element, tagName: []const u8) ?Element;
+
+        pub fn elementsByTagNameAlloc(self: Element, allocator: std.mem.Allocator, tagName: []const u8) ![]Element;
+        // or
+        pub fn elems(self: Element, allocator: std.mem.Allocator, tagName: []const u8) ![]Element;
+
         pub fn elementByAttributeValue(self: Element, attributeName: []const u8, attributeValue: []const u8) ?Element;
-        pub fn textContent(self: Element, allocator: std.mem.Allocator) ![]const u8;
+        pub fn textAlloc(self: Element, allocator: std.mem.Allocator) ![]const u8;
     }
 
     element: Element,
