@@ -1,0 +1,6 @@
+.{
+    .name = "benchmarks-dishwasher",
+    .version = "0.0.0",
+    .dependencies = .{ .dishwasher = .{ .path = "../.." } },
+    .paths = .{ "build.zig", "build.zig.zon", "src" },
+}
