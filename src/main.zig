@@ -680,12 +680,14 @@ pub const Document = struct {
                     .attr => |attrShape| {
                         if (T != []const u8 and T != ?[]const u8)
                             @compileError("Cannot populate type " ++ @typeName(T) ++ " with element content. Hint: type must be '[]const u8'");
-                        val.* = self.attributeValueByName(attrShape.attributeName) orelse if (@typeInfo(T) == .Optional) {
+                        const originalValue = self.attributeValueByName(attrShape.attributeName) orelse if (@typeInfo(T) == .Optional) {
                             val.* = null;
                             return;
                         } else {
                             return PopulateError.MissingAttribute;
                         };
+                        val.* = try allocator.alloc(u8, originalValue.len);
+                        @memcpy(val.*, originalValue);
                     },
                     .children => |children| {
                         if (@TypeOf(T) != type)

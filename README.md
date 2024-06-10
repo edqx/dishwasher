@@ -58,7 +58,10 @@ pub const World = struct {
 // Dishwasher will take the "XmlShape" declaration in each struct to understand how to read them
 // from the document.
 var world: World = undefined;
-try ownedDocument.doc.populateValueType(World, ownedDocument.arena.allocator(), &world);
+try ownedDocument.doc.populateValueType(World, arena.allocator(), &world);
+// Note: strings are copied from the document, so while you may deinitialise the document, you still OWN
+// the resulting value, and moreover are responsible for freeing the strings. Use an arena
+// to quickly and safely dispose of the entire value with all of the copied strings.
 
 std.log.info("num countries: {}", .{ world.countries.len });
 ```
@@ -75,7 +78,7 @@ pub const worldSchema = .{
     })),
 };
 ...
-const world: dw.ShapeType(worldSchema) = try ownedDocument.doc.createValueShape(worldSchema, ownedDocument.arena.allocator());
+const world: dw.ShapeType(worldSchema) = try ownedDocument.doc.createValueShape(worldSchema, arena.allocator());
 
 std.log.info("num countries: {}", .{ world.countries.len });
 ```
@@ -91,7 +94,7 @@ pub const worldSchema = .{
     })),
 };
 ...
-const world: dw.ShapeType(worldSchema) = try ownedDocument.doc.createValueShape(worldSchema, ownedDocument.arena.allocator());
+const world: dw.ShapeType(worldSchema) = try ownedDocument.doc.createValueShape(worldSchema, arena.allocator());
 
 std.log.info("num countries: {}", .{ world.countries.len });
 ```
