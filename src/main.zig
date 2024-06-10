@@ -695,3 +695,226 @@ pub fn parseXmlFull(allocator: std.mem.Allocator, source: []const u8) !OwnedDocu
     var stream = std.io.fixedBufferStream(source);
     return try parseXml(allocator, stream.reader());
 }
+
+pub const Shape = union(enum) {
+    pub const Single = struct {
+        tagName: []const u8,
+        child: *const Shape,
+    };
+
+    pub const Many = struct {
+        tagName: []const u8,
+        child: *const Shape,
+    };
+
+    pub const Attr = struct {
+        attributeName: []const u8,
+    };
+
+    pub const Child = struct {
+        fieldName: [:0]const u8,
+        shape: *const Shape,
+    };
+
+    maybe: *const Shape,
+    single: Single,
+    many: Many,
+    attr: Attr,
+    children: []const Child,
+    content: void,
+};
+
+pub fn ShapeType(comptime shape: anytype) type {
+    return switch (processChild(shape).*) {
+        .maybe => |maybeShape| ?ShapeType(maybeShape),
+        .single => |singleShape| ShapeType(singleShape.child),
+        .many => |manyShape| []ShapeType(manyShape.child),
+        .attr => []const u8,
+        .children => |childrenShape| blk: {
+            var fields: []const std.builtin.Type.StructField = &.{};
+            for (childrenShape) |child| {
+                fields = fields ++ &[_]std.builtin.Type.StructField{
+                    std.builtin.Type.StructField{
+                        .name = child.fieldName,
+                        .type = ShapeType(child.shape),
+                        .alignment = @alignOf(ShapeType(child.shape)),
+                        .default_value = null,
+                        .is_comptime = false,
+                    },
+                };
+            }
+            break :blk @Type(
+                std.builtin.Type{
+                    .Struct = .{
+                        .backing_integer = null,
+                        .decls = &.{},
+                        .fields = fields,
+                        .is_tuple = false,
+                        .layout = .auto,
+                    },
+                },
+            );
+        },
+        .content => []const u8,
+    };
+}
+
+pub const XmlShapeIdentifier = "XmlShape";
+
+pub fn processChild(comptime child: anytype) *const Shape {
+    if (@TypeOf(child) == []const u8) return &Shape{ .attr = .{.child} }; // strings are alias for attribute name
+    if (@TypeOf(child) == *const Shape) return child; // accept any shape instances too
+    if (@TypeOf(child) == type) {
+        return processChild(@field(child, XmlShapeIdentifier));
+    }
+
+    switch (@typeInfo(@TypeOf(child))) {
+        .EnumLiteral => {
+            if (child.* == .content) return &Shape{.content};
+        },
+        .Struct => {
+            var children: []const Shape.Child = &.{};
+            for (std.meta.fields(@TypeOf(child))) |field| {
+                children = children ++ &[_]Shape.Child{Shape.Child{ .fieldName = field.name, .shape = @field(child, field.name) }};
+            }
+            return &Shape{ .children = children };
+        },
+        else => @compileError("Invalid XML shape: " ++ @typeName(@TypeOf(child.*))),
+    }
+}
+
+pub fn maybe(comptime child: anytype) *const Shape {
+    return &Shape{ .maybe = processChild(child) };
+}
+pub fn @"?"(comptime child: anytype) *const Shape {
+    return maybe(child);
+}
+
+pub fn singleElement(comptime tagName: []const u8, comptime child: anytype) *const Shape {
+    return &Shape{ .single = .{ .tagName = tagName, .child = processChild(child) } };
+}
+pub fn @"<>"(comptime tagName: []const u8, comptime child: anytype) *const Shape {
+    return singleElement(tagName, child);
+}
+pub fn @"?<>"(comptime tagName: []const u8, comptime child: anytype) *const Shape {
+    return maybe(singleElement(tagName, child));
+}
+
+pub fn manyElements(comptime tagName: []const u8, comptime child: anytype) *const Shape {
+    return &Shape{ .many = .{ .tagName = tagName, .child = processChild(child) } };
+}
+pub fn @"[]"(comptime tagName: []const u8, comptime child: anytype) *const Shape {
+    return manyElements(tagName, child);
+}
+pub fn @"?[]"(comptime tagName: []const u8, comptime child: anytype) *const Shape {
+    return maybe(manyElements(tagName, child));
+}
+
+pub fn attribute(comptime attributeName: []const u8) *const Shape {
+    return &Shape{ .attr = .{ .attributeName = attributeName } };
+}
+pub fn @"$"(comptime tagName: []const u8, child: anytype) *const Shape {
+    return attribute(tagName, child);
+}
+pub fn @"?$"(comptime tagName: []const u8, comptime child: anytype) *const Shape {
+    return maybe(attribute(tagName, child));
+}
+
+pub fn elementContent() *const Shape {
+    return &Shape{ .content = {} };
+}
+pub fn @"*"() *const Shape {
+    return elementContent();
+}
+
+const PopulateError = error{MissingAttribute};
+
+pub fn resolveNullTypeInfo(comptime T: type) ?std.builtin.Type {
+    if (@typeInfo(T) == .Optional) {
+        return @typeInfo(@typeInfo(T).Optional.child);
+    }
+    return @typeInfo(T);
+}
+
+pub fn populateXmlValueTypeShapeImpl(comptime T: type, comptime shape: *const Shape, allocator: std.mem.Allocator, val: *T, element: Document.Node.Element) !void {
+    const resolvedTypeInfo = comptime resolveNullTypeInfo(T);
+    switch (shape.*) {
+        .maybe => |maybeChild| {
+            if (@typeInfo(T) != .Optional)
+                @compileError("Cannot populate type " ++ @typeName(T) ++ " with many elements. Hint: field must be optional");
+
+            try populateXmlValueTypeShapeImpl(T, maybeChild, allocator, val, element);
+        },
+        .single => |singleShape| {
+            const foundElem = element.elementByTagName(singleShape.tagName) orelse if (@typeInfo(T) == .Optional) {
+                val.* = null;
+                return;
+            } else {
+                return PopulateError.MissingAttribute;
+            };
+            val.* = try createXmlValueTypeShape(T, singleShape.child, allocator, foundElem);
+        },
+        .many => |manyShape| {
+            if (resolvedTypeInfo == null or resolvedTypeInfo.? != .Pointer or resolvedTypeInfo.?.Pointer.size != .Slice)
+                @compileError("Cannot populate type " ++ @typeName(T) ++ " with many elements. Hint: type must be a slice");
+
+            const filtered = try element.elementsByTagName(allocator, manyShape.tagName);
+            val.* = try allocator.alloc(resolvedTypeInfo.?.Pointer.child, filtered.len);
+            errdefer allocator.free(val.*);
+            for (0.., filtered) |i, elem| {
+                (val.*)[i] = try createXmlValueTypeShape(resolvedTypeInfo.?.Pointer.child, manyShape.child, allocator, elem);
+            }
+        },
+        .attr => |attrShape| {
+            if (T != []const u8 and T != ?[]const u8) @compileError("Cannot populate type " ++ @typeName(T) ++ " with element content. Hint: type must be '[]const u8'");
+            val.* = element.attributeValueByName(attrShape.attributeName) orelse if (@typeInfo(T) == .Optional) {
+                val.* = null;
+                return;
+            } else {
+                return PopulateError.MissingAttribute;
+            };
+        },
+        .children => |children| {
+            if (@TypeOf(T) != type) @compileError("Cannot populate type " ++ @typeName(T) ++ " with element children. Hint: type must a struct");
+            inline for (children) |field| {
+                @field(val.*, field.fieldName) = try createXmlValueTypeShape(@TypeOf(@field(val.*, field.fieldName)), field.shape, allocator, element);
+            }
+        },
+        .content => {
+            if (T != []const u8 and T != ?[]const u8) @compileError("Cannot populate type " ++ @typeName(T) ++ " with element content. Hint: type must be '[]const u8'");
+            val.* = try element.textContent(allocator);
+        },
+    }
+}
+
+pub fn populateXmlValueTypeShape(comptime T: type, comptime shape: anytype, allocator: std.mem.Allocator, val: *T, element: Document.Node.Element) !void {
+    try populateXmlValueTypeShapeImpl(T, processChild(shape), allocator, val, element);
+}
+
+pub fn populateXmlValueType(comptime T: type, allocator: std.mem.Allocator, val: *T, element: Document.Node.Element) !void {
+    try populateXmlValueTypeShape(T, @field(T, XmlShapeIdentifier), allocator, val, element);
+}
+
+pub fn createXmlValueTypeShape(comptime T: type, comptime shape: anytype, allocator: std.mem.Allocator, element: Document.Node.Element) !T {
+    var a: T = undefined;
+    switch (@typeInfo(T)) {
+        .Struct => {
+            inline for (std.meta.fields(T)) |field| {
+                if (field.default_value) |defaultValue| {
+                    @field(a, field.name) = @as(*field.type, @ptrCast(@alignCast(defaultValue))).*;
+                }
+            }
+        },
+        else => {},
+    }
+    try populateXmlValueTypeShape(T, shape, allocator, &a, element);
+    return a;
+}
+
+pub fn createXmlValue(comptime T: type, allocator: std.mem.Allocator, element: Document.Node.Element) !T {
+    return createXmlValueTypeShape(T, @field(T, XmlShapeIdentifier), allocator, element);
+}
+
+pub fn createXmlValueShape(comptime shape: anytype, allocator: std.mem.Allocator, element: Document.Node.Element) !ShapeType(shape) {
+    return createXmlValueTypeShape(ShapeType(shape), allocator, shape, element);
+}
