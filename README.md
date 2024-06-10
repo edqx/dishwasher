@@ -2,7 +2,7 @@
 
 ### Disclaimer: This XML parser is **NOT** compliant with the XML spec!
 
-A relatively crude, but also relatively fast, XML parser for [Zig](https://ziglang.org) 0.12.0.
+A relatively crude, but also relatively fast, XML parser for [Zig](https://ziglang.org) 0.13.0.
 
 I needed a faster XML parser than the ones that were available, and I didn't need it to be spec compliant, so I wrote this and releasing it in case it is useful to anyone else.
 
