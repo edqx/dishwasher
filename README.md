@@ -122,8 +122,8 @@ pub fn @"[]"(comptime tagName: []const u8, comptime child: anytype) *const Shape
 
 pub fn attribute(comptime attributeName: []const u8) *const Shape;
 // or
-pub fn @"$"(comptime tagName: []const u8, child: anytype) *const Shape;
-pub fn @"?$"(comptime tagName: []const u8, comptime child: anytype) *const Shape;
+pub fn @"$"(comptime tagName: []const u8) *const Shape;
+pub fn @"?$"(comptime tagName: []const u8) *const Shape;
 
 pub fn elementContent(contentMode: Shape.ContentMode) *const Shape;
 // or
