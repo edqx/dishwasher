@@ -70,8 +70,24 @@ pub const worldSchema = .{
         .name = dw.attribute("name"),
         .provinces = dw.manyElements("province", .{
             .name = dw.attribute("name"),
-            .description = dw.elementContent(.verbatim)
-        })
+            .description = dw.elementContent(.verbatim),
+        }),
+    })),
+};
+...
+const world: dw.ShapeType(worldSchema) = try ownedDocument.doc.createValueShape(worldSchema, ownedDocument.arena.allocator());
+
+std.log.info("num countries: {}", .{ world.countries.len });
+```
+With an alternative syntax:
+```zig
+pub const worldSchema = .{
+    .countries = dw.@"<>"("countries", dw.@"[]"("country", .{
+        .name = dw.@"$"("name"),
+        .provinces = dw.@"[]"("province", .{
+            .name = dw.@"$"("name"),
+            .description = dw.@"*"(.verbatim),
+        }),
     })),
 };
 ...

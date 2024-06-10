@@ -758,7 +758,7 @@ pub const Document = struct {
     }
 
     pub fn populateValueTypeShape(self: Document, comptime T: type, comptime shape: anytype, allocator: std.mem.Allocator, val: *T) !void {
-        try self.root.populateValueTypeShapeImpl(T, shape, allocator, val);
+        try self.root.populateValueTypeShape(T, shape, allocator, val);
     }
 
     pub fn populateValueType(self: Document, comptime T: type, allocator: std.mem.Allocator, val: *T) !void {
@@ -939,11 +939,11 @@ pub fn @"[]"(comptime tagName: []const u8, comptime child: anytype) *const Shape
 pub fn attribute(comptime attributeName: []const u8) *const Shape {
     return &Shape{ .attr = .{ .attributeName = attributeName } };
 }
-pub fn @"$"(comptime tagName: []const u8, child: anytype) *const Shape {
-    return attribute(tagName, child);
+pub fn @"$"(comptime attributeName: []const u8) *const Shape {
+    return attribute(attributeName);
 }
-pub fn @"?$"(comptime tagName: []const u8, comptime child: anytype) *const Shape {
-    return maybe(attribute(tagName, child));
+pub fn @"?$"(comptime attributeName: []const u8) *const Shape {
+    return maybe(attribute(attributeName));
 }
 
 pub fn elementContent(contentMode: Shape.ContentMode) *const Shape {
