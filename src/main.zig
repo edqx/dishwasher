@@ -647,6 +647,98 @@ pub const Document = struct {
                 }
                 return try arr.toOwnedSlice();
             }
+
+            fn populateValueTypeShapeImpl(self: Element, comptime T: type, comptime shape: *const Shape, allocator: std.mem.Allocator, val: *T) !void {
+                const resolvedTypeInfo = comptime resolveNullTypeInfo(T);
+                switch (shape.*) {
+                    .maybe => |maybeChild| {
+                        if (@typeInfo(T) != .Optional)
+                            @compileError("Cannot populate type " ++ @typeName(T) ++ " with many elements. Hint: field must be optional");
+
+                        try self.populateValueTypeShapeImpl(T, maybeChild, allocator, val);
+                    },
+                    .single => |singleShape| {
+                        const foundElem = self.elementByTagName(singleShape.tagName) orelse if (@typeInfo(T) == .Optional) {
+                            val.* = null;
+                            return;
+                        } else {
+                            return PopulateError.MissingChild;
+                        };
+                        val.* = try foundElem.createValueTypeShape(T, singleShape.child, allocator);
+                    },
+                    .many => |manyShape| {
+                        if (resolvedTypeInfo == null or resolvedTypeInfo.? != .Pointer or resolvedTypeInfo.?.Pointer.size != .Slice)
+                            @compileError("Cannot populate type " ++ @typeName(T) ++ " with many elements. Hint: type must be a slice");
+
+                        const filtered = try self.elementsByTagNameAlloc(allocator, manyShape.tagName);
+                        val.* = try allocator.alloc(resolvedTypeInfo.?.Pointer.child, filtered.len);
+                        errdefer allocator.free(val.*);
+                        for (0.., filtered) |i, element| {
+                            (val.*)[i] = try element.createValueTypeShape(resolvedTypeInfo.?.Pointer.child, manyShape.child, allocator);
+                        }
+                    },
+                    .attr => |attrShape| {
+                        if (T != []const u8 and T != ?[]const u8)
+                            @compileError("Cannot populate type " ++ @typeName(T) ++ " with element content. Hint: type must be '[]const u8'");
+                        val.* = self.attributeValueByName(attrShape.attributeName) orelse if (@typeInfo(T) == .Optional) {
+                            val.* = null;
+                            return;
+                        } else {
+                            return PopulateError.MissingAttribute;
+                        };
+                    },
+                    .children => |children| {
+                        if (@TypeOf(T) != type)
+                            @compileError("Cannot populate type " ++ @typeName(T) ++ " with element children. Hint: type must a struct");
+                        inline for (children) |field| {
+                            @field(val.*, field.fieldName) = try self.createValueTypeShape(@TypeOf(@field(val.*, field.fieldName)), field.shape, allocator);
+                        }
+                    },
+                    .content => |contentType| {
+                        if (T != []const u8 and T != ?[]const u8)
+                            @compileError("Cannot populate type " ++ @typeName(T) ++ " with element content. Hint: type must be '[]const u8'");
+                        val.* = try self.textAlloc(allocator);
+                        switch (contentType) {
+                            .verbatim => {},
+                            .trim => {
+                                val.* = std.mem.trim(u8, val.*, &std.ascii.whitespace);
+                            },
+                        }
+                    },
+                }
+            }
+
+            pub fn populateValueTypeShape(self: Element, comptime T: type, comptime shape: anytype, allocator: std.mem.Allocator, val: *T) !void {
+                try self.populateValueTypeShapeImpl(T, processChild(shape), allocator, val);
+            }
+
+            pub fn populateValueType(self: Element, comptime T: type, allocator: std.mem.Allocator, val: *T) !void {
+                try self.populateValueTypeShape(T, @field(T, XmlShapeIdentifier), allocator, val);
+            }
+
+            pub fn createValueTypeShape(self: Element, comptime T: type, comptime shape: anytype, allocator: std.mem.Allocator) !T {
+                var a: T = undefined;
+                switch (@typeInfo(T)) {
+                    .Struct => {
+                        inline for (std.meta.fields(T)) |field| {
+                            if (field.default_value) |defaultValue| {
+                                @field(a, field.name) = @as(*field.type, @ptrCast(@alignCast(defaultValue))).*;
+                            }
+                        }
+                    },
+                    else => {},
+                }
+                try self.populateValueTypeShape(T, shape, allocator, &a);
+                return a;
+            }
+
+            pub fn createValue(self: Element, comptime T: type, allocator: std.mem.Allocator) !T {
+                return self.createValueTypeShape(T, @field(T, XmlShapeIdentifier), allocator);
+            }
+
+            pub fn createValueShape(self: Element, comptime shape: anytype, allocator: std.mem.Allocator) !ShapeType(shape) {
+                return self.createValueTypeShape(ShapeType(shape), allocator, shape);
+            }
         };
 
         element: Element,
@@ -663,6 +755,26 @@ pub const Document = struct {
     pub fn fromReader(allocator: std.mem.Allocator, reader: anytype) !Document {
         var builder = try Document.builderFromStream(allocator, reader);
         return Document{ .root = .{ .tagName = "", .attributes = &.{}, .is_single = false, .children = try builder.buildChildren(null) } };
+    }
+
+    pub fn populateValueTypeShape(self: Document, comptime T: type, comptime shape: anytype, allocator: std.mem.Allocator, val: *T) !void {
+        try self.root.populateValueTypeShapeImpl(T, shape, allocator, val);
+    }
+
+    pub fn populateValueType(self: Document, comptime T: type, allocator: std.mem.Allocator, val: *T) !void {
+        try self.root.populateValueType(T, allocator, val);
+    }
+
+    pub fn createValueTypeShape(self: Document, comptime T: type, comptime shape: anytype, allocator: std.mem.Allocator) !T {
+        return try self.root.createValueTypeShape(T, shape, allocator);
+    }
+
+    pub fn createValue(self: Document, comptime T: type, allocator: std.mem.Allocator) !T {
+        return self.root.createValue(T, allocator);
+    }
+
+    pub fn createValueShape(self: Document, comptime shape: anytype, allocator: std.mem.Allocator) !ShapeType(shape) {
+        return self.root.createValueTypeShape(ShapeType(shape), shape, allocator);
     }
 };
 
@@ -728,12 +840,17 @@ pub const Shape = union(enum) {
         shape: *const Shape,
     };
 
+    pub const ContentMode = enum(u1) {
+        verbatim,
+        trim,
+    };
+
     maybe: *const Shape,
     single: Single,
     many: Many,
     attr: Attr,
     children: []const Child,
-    content: void,
+    content: ContentMode,
 };
 
 pub fn ShapeType(comptime shape: anytype) type {
@@ -818,9 +935,6 @@ pub fn manyElements(comptime tagName: []const u8, comptime child: anytype) *cons
 pub fn @"[]"(comptime tagName: []const u8, comptime child: anytype) *const Shape {
     return manyElements(tagName, child);
 }
-pub fn @"?[]"(comptime tagName: []const u8, comptime child: anytype) *const Shape {
-    return maybe(manyElements(tagName, child));
-}
 
 pub fn attribute(comptime attributeName: []const u8) *const Shape {
     return &Shape{ .attr = .{ .attributeName = attributeName } };
@@ -832,14 +946,14 @@ pub fn @"?$"(comptime tagName: []const u8, comptime child: anytype) *const Shape
     return maybe(attribute(tagName, child));
 }
 
-pub fn elementContent() *const Shape {
-    return &Shape{ .content = {} };
+pub fn elementContent(contentMode: Shape.ContentMode) *const Shape {
+    return &Shape{ .content = contentMode };
 }
-pub fn @"*"() *const Shape {
-    return elementContent();
+pub fn @"*"(contentMode: Shape.ContentMode) *const Shape {
+    return elementContent(contentMode);
 }
 
-const PopulateError = error{MissingAttribute};
+const PopulateError = error{ MissingAttribute, MissingChild };
 
 pub fn resolveNullTypeInfo(comptime T: type) ?std.builtin.Type {
     if (@typeInfo(T) == .Optional) {
@@ -848,85 +962,86 @@ pub fn resolveNullTypeInfo(comptime T: type) ?std.builtin.Type {
     return @typeInfo(T);
 }
 
-pub fn populateXmlValueTypeShapeImpl(comptime T: type, comptime shape: *const Shape, allocator: std.mem.Allocator, val: *T, element: Document.Node.Element) !void {
-    const resolvedTypeInfo = comptime resolveNullTypeInfo(T);
-    switch (shape.*) {
-        .maybe => |maybeChild| {
-            if (@typeInfo(T) != .Optional)
-                @compileError("Cannot populate type " ++ @typeName(T) ++ " with many elements. Hint: field must be optional");
+pub const Pet = struct {
+    pub const XmlShape = .{
+        .name = elementContent(.trim),
+        .colour = maybe(attribute("colour")),
+        .animal = attribute("animal"),
+    };
 
-            try populateXmlValueTypeShapeImpl(T, maybeChild, allocator, val, element);
-        },
-        .single => |singleShape| {
-            const foundElem = element.elementByTagName(singleShape.tagName) orelse if (@typeInfo(T) == .Optional) {
-                val.* = null;
-                return;
-            } else {
-                return PopulateError.MissingAttribute;
-            };
-            val.* = try createXmlValueTypeShape(T, singleShape.child, allocator, foundElem);
-        },
-        .many => |manyShape| {
-            if (resolvedTypeInfo == null or resolvedTypeInfo.? != .Pointer or resolvedTypeInfo.?.Pointer.size != .Slice)
-                @compileError("Cannot populate type " ++ @typeName(T) ++ " with many elements. Hint: type must be a slice");
+    name: []const u8,
+    colour: ?[]const u8,
+    animal: []const u8,
+};
 
-            const filtered = try element.elementsByTagNameAlloc(allocator, manyShape.tagName);
-            val.* = try allocator.alloc(resolvedTypeInfo.?.Pointer.child, filtered.len);
-            errdefer allocator.free(val.*);
-            for (0.., filtered) |i, elem| {
-                (val.*)[i] = try createXmlValueTypeShape(resolvedTypeInfo.?.Pointer.child, manyShape.child, allocator, elem);
-            }
-        },
-        .attr => |attrShape| {
-            if (T != []const u8 and T != ?[]const u8) @compileError("Cannot populate type " ++ @typeName(T) ++ " with element content. Hint: type must be '[]const u8'");
-            val.* = element.attributeValueByName(attrShape.attributeName) orelse if (@typeInfo(T) == .Optional) {
-                val.* = null;
-                return;
-            } else {
-                return PopulateError.MissingAttribute;
-            };
-        },
-        .children => |children| {
-            if (@TypeOf(T) != type) @compileError("Cannot populate type " ++ @typeName(T) ++ " with element children. Hint: type must a struct");
-            inline for (children) |field| {
-                @field(val.*, field.fieldName) = try createXmlValueTypeShape(@TypeOf(@field(val.*, field.fieldName)), field.shape, allocator, element);
-            }
-        },
-        .content => {
-            if (T != []const u8 and T != ?[]const u8) @compileError("Cannot populate type " ++ @typeName(T) ++ " with element content. Hint: type must be '[]const u8'");
-            val.* = try element.textAlloc(allocator);
-        },
-    }
-}
+pub const Person = struct {
+    pub const XmlShape = .{
+        .name = elementContent(.trim),
+        .age = attribute("age"),
+        .pets = singleElement("pets", manyElements("pet", Pet)),
+    };
 
-pub fn populateXmlValueTypeShape(comptime T: type, comptime shape: anytype, allocator: std.mem.Allocator, val: *T, element: Document.Node.Element) !void {
-    try populateXmlValueTypeShapeImpl(T, processChild(shape), allocator, val, element);
-}
+    name: []const u8,
+    age: []const u8,
+    pets: []Pet,
+};
 
-pub fn populateXmlValueType(comptime T: type, allocator: std.mem.Allocator, val: *T, element: Document.Node.Element) !void {
-    try populateXmlValueTypeShape(T, @field(T, XmlShapeIdentifier), allocator, val, element);
-}
+pub const Register = struct {
+    pub const XmlShape = .{
+        .people = singleElement("people", manyElements("person", Person)),
+    };
 
-pub fn createXmlValueTypeShape(comptime T: type, comptime shape: anytype, allocator: std.mem.Allocator, element: Document.Node.Element) !T {
-    var a: T = undefined;
-    switch (@typeInfo(T)) {
-        .Struct => {
-            inline for (std.meta.fields(T)) |field| {
-                if (field.default_value) |defaultValue| {
-                    @field(a, field.name) = @as(*field.type, @ptrCast(@alignCast(defaultValue))).*;
-                }
-            }
-        },
-        else => {},
-    }
-    try populateXmlValueTypeShape(T, shape, allocator, &a, element);
-    return a;
-}
+    people: []Person,
+};
 
-pub fn createXmlValue(comptime T: type, allocator: std.mem.Allocator, element: Document.Node.Element) !T {
-    return createXmlValueTypeShape(T, @field(T, XmlShapeIdentifier), allocator, element);
-}
+test "create xml values" {
+    const xml =
+        \\<people>
+        \\    <person age="probably like 30 something">
+        \\        Andrew Kelley
+        \\
+        \\        <pets>
+        \\            <pet animal="ziguana">Zero</pet>
+        \\            <pet animal="ziguana">Ziggy</pet>
+        \\        </pets>
+        \\    </person>
+        \\    <person age="24">
+        \\        Edward the Confessor
+        \\
+        \\        <pets>
+        \\            <pet animal="dog" colour="red">Barney</pet>
+        \\            <pet animal="cat" colour="white">Whitepaws</pet>
+        \\        </pets>
+        \\    </person>
+        \\</people>
+    ;
 
-pub fn createXmlValueShape(comptime shape: anytype, allocator: std.mem.Allocator, element: Document.Node.Element) !ShapeType(shape) {
-    return createXmlValueTypeShape(ShapeType(shape), allocator, shape, element);
+    var stream = std.io.fixedBufferStream(xml);
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const document = try Document.fromReader(arena.allocator(), stream.reader());
+
+    const person = try document.createValue(Register, arena.allocator());
+
+    try std.testing.expectEqual(person.people.len, 2);
+
+    try std.testing.expectEqualStrings(person.people[0].age, "probably like 30 something");
+    try std.testing.expectEqualStrings(person.people[0].name, "Andrew Kelley");
+    try std.testing.expectEqual(person.people[0].pets.len, 2);
+    try std.testing.expectEqualStrings(person.people[0].pets[0].animal, "ziguana");
+    try std.testing.expectEqual(person.people[0].pets[0].colour, null);
+    try std.testing.expectEqualStrings(person.people[0].pets[0].name, "Zero");
+    try std.testing.expectEqualStrings(person.people[0].pets[1].animal, "ziguana");
+    try std.testing.expectEqual(person.people[0].pets[1].colour, null);
+    try std.testing.expectEqualStrings(person.people[0].pets[1].name, "Ziggy");
+
+    try std.testing.expectEqualStrings(person.people[1].age, "24");
+    try std.testing.expectEqualStrings(person.people[1].name, "Edward the Confessor");
+    try std.testing.expectEqual(person.people[1].pets.len, 2);
+    try std.testing.expectEqualStrings(person.people[1].pets[0].animal, "dog");
+    try std.testing.expectEqualStrings(person.people[1].pets[0].colour.?, "red");
+    try std.testing.expectEqualStrings(person.people[1].pets[0].name, "Barney");
+    try std.testing.expectEqualStrings(person.people[1].pets[1].animal, "cat");
+    try std.testing.expectEqualStrings(person.people[1].pets[1].colour.?, "white");
+    try std.testing.expectEqualStrings(person.people[1].pets[1].name, "Whitepaws");
 }

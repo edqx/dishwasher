@@ -11,6 +11,7 @@ Not many, but it can parse the full [OpenGL XML Spec document](https://github.co
 
 ### Usage
 #### Example
+You can load an entire document and inspect the resulting tree with some utility methods on the elements:
 ```zig
 var gpa = std.heap.GeneralPurposeAllocator(.{}){};
 var ownedDocument = try dishwasher.parseXmlFull(gpa.allocator(), @embedFile("./gl-spec.xml"));
@@ -24,11 +25,90 @@ const t = typesSet.elementByAttributeValue("name", "GL_EXT_direct_state_access")
 try std.io.getStdOut().writer().print("comment: {s}", .{t.attributeValueByName("comment") orelse unreachable});
 ```
 
+Alternatively, you can create a schema for the document in Zig to populate or create a value of a certain type from a document. Since there's no way to attach metadata to fields in structs, we'll need to create a schema using some helpful builder functions from Dishwasher:
+```zig
+pub const World = struct {
+    pub const Province = struct {
+        pub const XmlShape = .{
+            .name = dw.attribute("name"),
+            .description = dw.elementContent(.verbatim)
+        };
+
+        name: []const u8,
+        description: []const u8
+    };
+
+    pub const Country = struct {
+        pub const XmlShape = .{
+            .name = dw.attribute("name"),
+            .provinces = dw.manyElements("province", Province)
+        };
+
+        name: []const u8,
+        provinces: []Province
+    };
+
+    pub const XmlShape = .{
+        .countries = dw.singleElement("countries", dw.manyElements("country", Country)),
+    };
+
+    countries: []Country
+};
+...
+// Dishwasher will take the "XmlShape" declaration in each struct to understand how to read them
+// from the document.
+var world: World = undefined;
+try ownedDocument.doc.populateValueType(World, ownedDocument.arena.allocator(), &world);
+
+std.log.info("num countries: {}", .{ world.countries.len });
+```
+
+If you want to skip the types, Dishwasher can infer the final struct type given any shape:
+```zig
+pub const worldSchema = .{
+    .countries = dw.singleElement("countries", dw.manyElements("country", .{
+        .name = dw.attribute("name"),
+        .provinces = dw.manyElements("province", .{
+            .name = dw.attribute("name"),
+            .description = dw.elementContent(.verbatim)
+        })
+    })),
+};
+...
+const world: dw.ShapeType(worldSchema) = try ownedDocument.doc.createValueShape(worldSchema, ownedDocument.arena.allocator());
+
+std.log.info("num countries: {}", .{ world.countries.len });
+```
+
+[Check out the tests](https://github.com/edqx/dishwasher/blob/master/src/main.zig) for more examples.
+
 #### API
 
 ```zig
 pub fn parseXml(allocator: std.mem.Allocator, reader: anytype) !OwnedDocument;
 pub fn parseXmlFull(allocator: std.mem.Allocator, source: []const u8) !OwnedDocument;
+
+pub fn maybe(comptime child: anytype) *const Shape;
+// or
+pub fn @"?"(comptime child: anytype) *const Shape;
+
+pub fn singleElement(comptime tagName: []const u8, comptime child: anytype) *const Shape;
+// or
+pub fn @"<>"(comptime tagName: []const u8, comptime child: anytype) *const Shape;
+pub fn @"?<>"(comptime tagName: []const u8, comptime child: anytype) *const Shape;
+
+pub fn manyElements(comptime tagName: []const u8, comptime child: anytype) *const Shape;
+// or
+pub fn @"[]"(comptime tagName: []const u8, comptime child: anytype) *const Shape;
+
+pub fn attribute(comptime attributeName: []const u8) *const Shape;
+// or
+pub fn @"$"(comptime tagName: []const u8, child: anytype) *const Shape;
+pub fn @"?$"(comptime tagName: []const u8, comptime child: anytype) *const Shape;
+
+pub fn elementContent(contentMode: Shape.ContentMode) *const Shape;
+// or
+pub fn @"*"(contentMode: Shape.ContentMode) *const Shape;
 
 pub const OwnedDocument = struct {
     arena: std.heap.ArenaAllocator,
@@ -39,6 +119,12 @@ pub const OwnedDocument = struct {
 
 pub const Document = struct {
     root: Node.Element,
+
+    pub fn populateValueTypeShape(self: Document, comptime T: type, comptime shape: anytype, allocator: std.mem.Allocator, val: *T) !void;
+    pub fn populateValueType(self: Document, comptime T: type, allocator: std.mem.Allocator, val: *T) !void;
+    pub fn createValueTypeShape(self: Document, comptime T: type, comptime shape: anytype, allocator: std.mem.Allocator) !T;
+    pub fn createValue(self: Document, comptime T: type, allocator: std.mem.Allocator) !T;
+    pub fn createValueShape(self: Document, comptime shape: anytype, allocator: std.mem.Allocator) !ShapeType(shape);
 };
 
 pub const Node = union {
@@ -67,10 +153,49 @@ pub const Node = union {
 
         pub fn elementByAttributeValue(self: Element, attributeName: []const u8, attributeValue: []const u8) ?Element;
         pub fn textAlloc(self: Element, allocator: std.mem.Allocator) ![]const u8;
+        
+        pub fn populateValueTypeShape(self: Element, comptime T: type, comptime shape: anytype, allocator: std.mem.Allocator, val: *T) !void;
+        pub fn populateValueType(self: Element, comptime T: type, allocator: std.mem.Allocator, val: *T) !void;
+        pub fn createValueTypeShape(self: Element, comptime T: type, comptime shape: anytype, allocator: std.mem.Allocator) !T;
+        pub fn createValue(self: Element, comptime T: type, allocator: std.mem.Allocator) !T;
+        pub fn createValueShape(self: Element, comptime shape: anytype, allocator: std.mem.Allocator) !ShapeType(shape);
     }
 
     element: Element,
     text: []const u8,
     comment: []const u8,
+};
+
+pub const Shape = union(enum) {
+    pub const Single = struct {
+        tagName: []const u8,
+        child: *const Shape,
+    };
+
+    pub const Many = struct {
+        tagName: []const u8,
+        child: *const Shape,
+    };
+
+    pub const Attr = struct {
+        attributeName: []const u8,
+    };
+
+    pub const Child = struct {
+        fieldName: [:0]const u8,
+        shape: *const Shape,
+    };
+
+    pub const ContentMode = enum(u1) {
+        verbatim,
+        trim,
+    };
+
+    maybe: *const Shape,
+    single: Single,
+    many: Many,
+    attr: Attr,
+    children: []const Child,
+    content: ContentMode,
 };
 ```
