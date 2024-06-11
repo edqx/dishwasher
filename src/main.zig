@@ -653,7 +653,7 @@ pub const Document = struct {
                 switch (shape.*) {
                     .maybe => |maybeChild| {
                         if (@typeInfo(T) != .Optional)
-                            @compileError("Cannot populate type " ++ @typeName(T) ++ " with many elements. Hint: field must be optional");
+                            @compileError("Cannot populate type " ++ @typeName(T) ++ " with an optional value. Hint: field must be optional");
 
                         try self.populateValueTypeShapeImpl(T, maybeChild, allocator, val);
                     },
@@ -686,8 +686,9 @@ pub const Document = struct {
                         } else {
                             return PopulateError.MissingAttribute;
                         };
-                        val.* = try allocator.alloc(u8, originalValue.len);
-                        @memcpy(val.*, originalValue);
+                        const allocated = try allocator.alloc(u8, originalValue.len);
+                        @memcpy(allocated, originalValue);
+                        val.* = allocated;
                     },
                     .children => |children| {
                         if (@TypeOf(T) != type)
@@ -699,13 +700,14 @@ pub const Document = struct {
                     .content => |contentType| {
                         if (T != []const u8 and T != ?[]const u8)
                             @compileError("Cannot populate type " ++ @typeName(T) ++ " with element content. Hint: type must be '[]const u8'");
-                        val.* = try self.textAlloc(allocator);
+                        var allocated = try self.textAlloc(allocator);
                         switch (contentType) {
                             .verbatim => {},
                             .trim => {
-                                val.* = std.mem.trim(u8, val.*, &std.ascii.whitespace);
+                                allocated = std.mem.trim(u8, allocated, &std.ascii.whitespace);
                             },
                         }
+                        val.* = allocated;
                     },
                 }
             }
