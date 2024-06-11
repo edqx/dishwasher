@@ -651,7 +651,7 @@ pub const Document = struct {
             const PopulateError = error{ MissingAttribute, MissingChild, NoOptionsUsed };
 
             fn populateValueTypeShapeImpl(self: Element, comptime T: type, comptime shape: *const Shape, allocator: std.mem.Allocator, val: *T) !void {
-                const resolvedTypeInfo = comptime resolveNullTypeInfo(T);
+                const resolvedTypeInfo = @typeInfo(resolveNullType(T));
                 const isNullable = @typeInfo(T) == .Optional;
                 switch (shape.*) {
                     .maybe => |maybeChild| {
@@ -680,10 +680,10 @@ pub const Document = struct {
                             (val.*)[i] = try element.createValueTypeShape(resolvedTypeInfo.Pointer.child, manyShape.child, allocator);
                         }
                     },
-                    .attr => |attrShape| {
+                    .attr => |attributeName| {
                         if (T != []const u8 and T != ?[]const u8)
                             @compileError("Cannot populate type " ++ @typeName(T) ++ " with element content. Hint: type must be '[]const u8'");
-                        const originalValue = self.attributeValueByName(attrShape.attributeName) orelse if (isNullable) {
+                        const originalValue = self.attributeValueByName(attributeName) orelse if (isNullable) {
                             val.* = null;
                             return;
                         } else {
@@ -700,6 +700,35 @@ pub const Document = struct {
                             @field(val.*, field.fieldName) = try self.createValueTypeShape(@TypeOf(@field(val.*, field.fieldName)), field.shape, allocator);
                         }
                     },
+                    .pattern => |orderedShapes| {
+                        var i: usize = 0;
+                        if (resolvedTypeInfo != .Struct or !resolvedTypeInfo.Struct.is_tuple)
+                            @compileError("Cannot populate type " ++ @typeName(T) ++ " with pattern. Hint: type must be a tuple");
+                        if (self.children.len < orderedShapes.len) {
+                            val.* = if (isNullable) null else return PopulateError.MissingChild;
+                            return;
+                        }
+                        val.* = while (i < self.children.len - orderedShapes.len) : (i += 1) {
+                            const childrenSlice = self.children[i..i+orderedShapes.len];
+                            var tuple: resolveNullType(T) = undefined;
+                            var done = true;
+                            blk: inline for (0.., orderedShapes) |j, orderedShape| {
+                                const fakeSubElement = Element{
+                                    .tagName = self.tagName,
+                                    .attributes = self.attributes,
+                                    .children = childrenSlice[j..j + 1],
+                                    .is_single = self.is_single
+                                };
+                                if (try fakeSubElement.createValueTypeShape(?resolvedTypeInfo.Struct.fields[j].type, orderedShape, allocator)) |branchVal| {
+                                    tuple[j] = branchVal;
+                                } else {
+                                    done = false; // does not match
+                                    break :blk;
+                                }
+                            }
+                            if (done) break tuple;
+                        } else if (isNullable) null else return PopulateError.MissingChild;
+                    },
                     .disj => |disjShapes| {
                         const differentTypes = comptime blk: {
                             var shapeTypes: []const type = &.{};
@@ -708,10 +737,10 @@ pub const Document = struct {
                             }
                             break :blk !std.mem.allEqual(type, shapeTypes, shapeTypes[0]);
                         };
-                        if (differentTypes or @typeInfo(@TypeOf(T)) == .Union) {
-                            if (differentTypes)
+                        if (differentTypes or resolvedTypeInfo == .Union) {
+                            if (resolvedTypeInfo != .Union)
                                 @compileError("Cannot populate type " ++ @typeName(T) ++ " with disjunction where the types may be different. Hint: type must be a union");
-                            const unionFields = @TypeOf(T).Union.fields;
+                            const unionFields = resolvedTypeInfo.Union.fields;
                             if (unionFields.len != disjShapes.len) {
                                 @compileError("Cannot populate type " ++ @typeInfo(T) ++ "with the given disjunction, as there a mismatched number of union fields to branches");
                             }
@@ -873,10 +902,6 @@ pub const Shape = union(enum) {
         child: *const Shape,
     };
 
-    pub const Attr = struct {
-        attributeName: []const u8,
-    };
-
     pub const Child = struct {
         fieldName: [:0]const u8,
         shape: *const Shape,
@@ -890,8 +915,9 @@ pub const Shape = union(enum) {
     maybe: *const Shape,
     single: Single,
     many: Many,
-    attr: Attr,
+    attr: []const u8,
     children: []const Child,
+    pattern: []const *const Shape,
     disj: []const *const Shape,
     content: ContentMode,
 };
@@ -922,6 +948,31 @@ pub fn ShapeType(comptime shape: anytype) type {
                         .decls = &.{},
                         .fields = fields,
                         .is_tuple = false,
+                        .layout = .auto,
+                    },
+                },
+            );
+        },
+        .pattern => |orderedShapes| blk: {
+            var fields: []const std.builtin.Type.StructField = &.{};
+            for (0.., orderedShapes) |i, child| {
+                fields = fields ++ &[_]std.builtin.Type.StructField{
+                    std.builtin.Type.StructField{
+                        .name = std.fmt.comptimePrint("{}", .{ i }),
+                        .type = ShapeType(child),
+                        .alignment = @alignOf(ShapeType(child)),
+                        .default_value = null,
+                        .is_comptime = false,
+                    },
+                };
+            }
+            break :blk @Type(
+                std.builtin.Type{
+                    .Struct = .{
+                        .backing_integer = null,
+                        .decls = &.{},
+                        .fields = fields,
+                        .is_tuple = true,
                         .layout = .auto,
                     },
                 },
@@ -985,7 +1036,9 @@ pub fn processChild(comptime child: anytype) *const Shape {
 }
 
 pub fn maybe(comptime child: anytype) *const Shape {
-    return &Shape{ .maybe = processChild(child) };
+    const shape = processChild(child);
+    if (shape.* == .maybe) @compileError("Cannot nest 'maybe'");
+    return &Shape{ .maybe = shape };
 }
 pub fn @"?"(comptime child: anytype) *const Shape {
     return maybe(child);
@@ -1009,7 +1062,7 @@ pub fn @"[]"(comptime tagName: []const u8, comptime child: anytype) *const Shape
 }
 
 pub fn attribute(comptime attributeName: []const u8) *const Shape {
-    return &Shape{ .attr = .{ .attributeName = attributeName } };
+    return &Shape{ .attr = attributeName };
 }
 pub fn @"$"(comptime attributeName: []const u8) *const Shape {
     return attribute(attributeName);
@@ -1025,6 +1078,19 @@ pub fn @"*"(contentMode: Shape.ContentMode) *const Shape {
     return elementContent(contentMode);
 }
 
+pub fn pattern(comptime children: anytype) *const Shape {
+    var shapes: []const *const Shape = &.{};
+    for (children) |child| {
+        const shape = processChild(child);
+        if (shape.* == .many or (shape.* == .maybe and shape.maybe.* == .many))
+            @compileError("Cannot have 'many elements' shape in a pattern");
+        shapes = shapes ++ &[_]*const Shape{ shape };
+    }
+    return &Shape{ .pattern = shapes };
+}
+pub fn @"%"(comptime children: anytype) *const Shape {
+    return pattern(children);
+}
 
 pub fn disjunction(comptime branches: anytype) *const Shape {
     if (branches.len < 2) @compileError("Disjunction needs at least two branches");
@@ -1039,11 +1105,11 @@ pub fn @"or"(comptime branches: anytype) *const Shape {
     return disjunction(branches);
 }
 
-pub fn resolveNullTypeInfo(comptime T: type) std.builtin.Type {
-    if (@typeInfo(T) == .Optional) {
-        return @typeInfo(@typeInfo(T).Optional.child);
-    }
-    return @typeInfo(T);
+fn resolveNullType(comptime T: type) type {
+    return switch (@typeInfo(T)) {
+        .Optional => |opt| opt.child,
+        else => T
+    };
 }
 
 pub const Pet = struct {
