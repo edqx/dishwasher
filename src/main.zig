@@ -647,9 +647,12 @@ pub const Document = struct {
                 }
                 return try arr.toOwnedSlice();
             }
+            
+            const PopulateError = error{ MissingAttribute, MissingChild, NoOptionsUsed };
 
             fn populateValueTypeShapeImpl(self: Element, comptime T: type, comptime shape: *const Shape, allocator: std.mem.Allocator, val: *T) !void {
                 const resolvedTypeInfo = comptime resolveNullTypeInfo(T);
+                const isNullable = @typeInfo(T) == .Optional;
                 switch (shape.*) {
                     .maybe => |maybeChild| {
                         if (@typeInfo(T) != .Optional)
@@ -667,20 +670,20 @@ pub const Document = struct {
                         val.* = try foundElem.createValueTypeShape(T, singleShape.child, allocator);
                     },
                     .many => |manyShape| {
-                        if (resolvedTypeInfo == null or resolvedTypeInfo.? != .Pointer or resolvedTypeInfo.?.Pointer.size != .Slice)
+                        if (resolvedTypeInfo != .Pointer or resolvedTypeInfo.Pointer.size != .Slice)
                             @compileError("Cannot populate type " ++ @typeName(T) ++ " with many elements. Hint: type must be a slice");
 
                         const filtered = try self.elementsByTagNameAlloc(allocator, manyShape.tagName);
-                        val.* = try allocator.alloc(resolvedTypeInfo.?.Pointer.child, filtered.len);
+                        val.* = try allocator.alloc(resolvedTypeInfo.Pointer.child, filtered.len);
                         errdefer allocator.free(val.*);
                         for (0.., filtered) |i, element| {
-                            (val.*)[i] = try element.createValueTypeShape(resolvedTypeInfo.?.Pointer.child, manyShape.child, allocator);
+                            (val.*)[i] = try element.createValueTypeShape(resolvedTypeInfo.Pointer.child, manyShape.child, allocator);
                         }
                     },
                     .attr => |attrShape| {
                         if (T != []const u8 and T != ?[]const u8)
                             @compileError("Cannot populate type " ++ @typeName(T) ++ " with element content. Hint: type must be '[]const u8'");
-                        const originalValue = self.attributeValueByName(attrShape.attributeName) orelse if (@typeInfo(T) == .Optional) {
+                        const originalValue = self.attributeValueByName(attrShape.attributeName) orelse if (isNullable) {
                             val.* = null;
                             return;
                         } else {
@@ -696,6 +699,41 @@ pub const Document = struct {
                         inline for (children) |field| {
                             @field(val.*, field.fieldName) = try self.createValueTypeShape(@TypeOf(@field(val.*, field.fieldName)), field.shape, allocator);
                         }
+                    },
+                    .disj => |disjShapes| {
+                        const differentTypes = comptime blk: {
+                            var shapeTypes: []const type = &.{};
+                            for (disjShapes) |branch| {
+                                shapeTypes = shapeTypes ++ &[_]type{ ShapeType(branch) };
+                            }
+                            break :blk !std.mem.allEqual(type, shapeTypes, shapeTypes[0]);
+                        };
+                        if (differentTypes or @typeInfo(@TypeOf(T)) == .Union) {
+                            if (differentTypes)
+                                @compileError("Cannot populate type " ++ @typeName(T) ++ " with disjunction where the types may be different. Hint: type must be a union");
+                            const unionFields = @TypeOf(T).Union.fields;
+                            if (unionFields.len != disjShapes.len) {
+                                @compileError("Cannot populate type " ++ @typeInfo(T) ++ "with the given disjunction, as there a mismatched number of union fields to branches");
+                            }
+                            inline for (0.., disjShapes) |i, branchShape| {
+                                if (try self.createValueTypeShape(?unionFields[i].type, branchShape, allocator)) |branchVal| {
+                                    val.* = @unionInit(T, unionFields[i].name, branchVal);
+                                    return;
+                                }
+                            }
+                        } else {
+                            inline for (disjShapes) |branchShape| {
+                                if (try self.createValueTypeShape(?T, branchShape, allocator)) |branchVal| {
+                                    val.* = branchVal;
+                                    return;
+                                }
+                            }
+                        }
+                        if (isNullable) {
+                            val.* = null;
+                            return;
+                        }
+                        return PopulateError.NoOptionsUsed;
                     },
                     .content => |contentType| {
                         if (T != []const u8 and T != ?[]const u8)
@@ -854,6 +892,7 @@ pub const Shape = union(enum) {
     many: Many,
     attr: Attr,
     children: []const Child,
+    disj: []const *const Shape,
     content: ContentMode,
 };
 
@@ -884,6 +923,35 @@ pub fn ShapeType(comptime shape: anytype) type {
                         .fields = fields,
                         .is_tuple = false,
                         .layout = .auto,
+                    },
+                },
+            );
+        },
+        .disj => |disjShapes| blk: {
+            var shapeTypes: []type = &.{};
+            for (disjShapes) |branch| {
+                shapeTypes = shapeTypes ++ &[_]type{ ShapeType(branch) };
+            }
+            if (std.mem.allEqual(type, shapeTypes, shapeTypes[0])) {
+                return shapeTypes[0];
+            }
+            var fields: []std.builtin.Type.UnionField = &.{};
+            for (0.., shapeTypes) |i, shapeType| {
+                fields = fields ++ &[]std.builtin.Type.UnionField{
+                    std.builtin.Type.UnionField{
+                        .name = std.fmt.comptimePrint("{s}", .{ i }),
+                        .type = shapeType,
+                        .alignment = @alignOf(shapeType)
+                    }
+                };
+            }
+            break :blk @Type(
+                std.builtin.Type{
+                    .Union = .{
+                        .tag_type = null,
+                        .layout = .auto,
+                        .decls = &.{},
+                        .fields = fields
                     },
                 },
             );
@@ -957,9 +1025,21 @@ pub fn @"*"(contentMode: Shape.ContentMode) *const Shape {
     return elementContent(contentMode);
 }
 
-const PopulateError = error{ MissingAttribute, MissingChild };
 
-pub fn resolveNullTypeInfo(comptime T: type) ?std.builtin.Type {
+pub fn disjunction(comptime branches: anytype) *const Shape {
+    if (branches.len < 2) @compileError("Disjunction needs at least two branches");
+
+    var shapes: []const *const Shape = &.{};
+    for (branches) |branch| {
+        shapes = shapes ++ &[_]*const Shape{ processChild(branch) };
+    }
+    return &.{ .disj = shapes };
+}
+pub fn @"or"(comptime branches: anytype) *const Shape {
+    return disjunction(branches);
+}
+
+pub fn resolveNullTypeInfo(comptime T: type) std.builtin.Type {
     if (@typeInfo(T) == .Optional) {
         return @typeInfo(@typeInfo(T).Optional.child);
     }
