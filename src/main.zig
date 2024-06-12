@@ -8,133 +8,6 @@ fn isWhitespace(c: u8) bool {
     };
 }
 
-// A very crude 'string intern' pool
-pub const StringPool = struct {
-    const PoolError = error{
-        NoActiveString,
-        StringActive,
-        StringTooLong,
-        StringPoppedOutOfExistence,
-    };
-
-    const maxBufferSize = 4096;
-    const initialStringSize = 256;
-
-    pub const Buffer = struct {
-        buffer: []u8,
-        stream: std.io.FixedBufferStream([]u8),
-    };
-
-    allocator: std.mem.Allocator,
-    buffers: std.SinglyLinkedList(Buffer),
-    maybeActiveStringOffset: ?usize = null,
-    association: std.StringHashMap([]const u8),
-
-    pub fn makeBufferNode(allocator: std.mem.Allocator, size: usize) !*std.SinglyLinkedList(Buffer).Node {
-        const initialBuffer = try allocator.alloc(u8, size);
-        const stream = std.io.fixedBufferStream(initialBuffer);
-
-        const node = try allocator.create(std.SinglyLinkedList(Buffer).Node);
-        node.data = .{ .buffer = initialBuffer, .stream = stream };
-
-        return node;
-    }
-
-    pub fn init(allocator: std.mem.Allocator) !StringPool {
-        var ll = std.SinglyLinkedList(Buffer){};
-        ll.prepend(try makeBufferNode(allocator, maxBufferSize));
-
-        return .{
-            .allocator = allocator,
-            .buffers = ll,
-            .association = std.StringHashMap([]const u8).init(allocator),
-        };
-    }
-
-    pub fn deinit(self: StringPool) void {
-        while (self.buffers.popFirst()) |node| {
-            self.allocator.free(node.data.buffer);
-            self.allocator.destroy(node);
-        }
-        self.maybeActiveStringOffset = null;
-        self.association.deinit();
-    }
-
-    fn activeStringOffset(self: *StringPool) !usize {
-        return self.maybeActiveStringOffset orelse return PoolError.NoActiveString;
-    }
-
-    fn activeWriteStream(self: *StringPool) !*std.io.FixedBufferStream([]u8) {
-        if (self.buffers.first) |first| return &first.data.stream;
-
-        const newNode = try makeBufferNode(self.allocator, maxBufferSize);
-        self.buffers.prepend(newNode);
-        return &newNode.data.stream;
-    }
-
-    fn expandForString(self: *StringPool, stringLength: usize) !void {
-        const writeStream = try self.activeWriteStream();
-        if (try writeStream.getEndPos() - try writeStream.getPos() < stringLength) {
-            const newNode = try makeBufferNode(self.allocator, maxBufferSize);
-            self.buffers.prepend(newNode);
-        }
-    }
-
-    pub fn startString(self: *StringPool) !void {
-        if (self.maybeActiveStringOffset != null) return PoolError.StringActive;
-        try self.expandForString(initialStringSize);
-
-        const writeStream = try self.activeWriteStream();
-        self.maybeActiveStringOffset = try writeStream.getPos();
-    }
-
-    pub fn addToString(self: *StringPool, c: u8) !void {
-        const stringOffset = try self.activeStringOffset();
-        var writeStream = try self.activeWriteStream();
-        if (try writeStream.getPos() >= writeStream.buffer.len) {
-            // make a new (larger) buffer in the linked list and
-            // bring the string over to it
-            const fitCapacityNode = try makeBufferNode(self.allocator, writeStream.buffer.len * 2);
-            self.buffers.prepend(fitCapacityNode);
-            const newStringSlice = fitCapacityNode.data.buffer[0..(try writeStream.getPos() - stringOffset)];
-            @memcpy(newStringSlice, try self.stringSoFar());
-            writeStream = &fitCapacityNode.data.stream;
-        }
-        try writeStream.writer().writeByte(c);
-    }
-
-    pub fn popFromString(self: *StringPool) !void {
-        const stringOffset = try self.activeStringOffset();
-        var writeStream = try self.activeWriteStream();
-        if (try writeStream.getPos() <= stringOffset) // we've popped more characters than are in the string
-            return PoolError.StringPoppedOutOfExistence;
-        try writeStream.seekBy(-1);
-    }
-
-    pub fn stringSoFar(self: *StringPool) ![]const u8 {
-        const stringOffset = try self.activeStringOffset();
-        var writeStream = try self.activeWriteStream();
-        return writeStream.buffer[stringOffset..try writeStream.getPos()];
-    }
-
-    pub fn finishString(self: *StringPool) ![]const u8 {
-        const stringOffset = try self.activeStringOffset();
-        var writeStream = try self.activeWriteStream();
-        const str = writeStream.buffer[stringOffset..try writeStream.getPos()];
-        if (self.association.get(str)) |existingString| return existingString;
-        try self.association.put(str, str);
-        self.maybeActiveStringOffset = null;
-        return str;
-    }
-
-    pub fn reset(self: *StringPool) !void {
-        const stringOffset = try self.activeStringOffset();
-        var writeStream = try self.activeWriteStream();
-        try writeStream.seekTo(stringOffset);
-        self.maybeActiveStringOffset = null;
-    }
-};
-
 pub const Lexer = struct {
     pub const Src = struct { start: usize, end: usize };
     pub const LexError = error{BadlyFormedComment};
@@ -164,7 +37,7 @@ pub const Lexer = struct {
 
             allocator: std.mem.Allocator,
             reader: Reader,
-            stringPool: StringPool,
+            str: std.ArrayList(u8),
 
             caret: usize = 0,
 
@@ -173,28 +46,26 @@ pub const Lexer = struct {
             inside_tag: bool = false,
             inside_comment: bool = false,
 
-            pub fn init(allocator: std.mem.Allocator, reader: Reader, stringPool: StringPool) _TokenIterator {
+            pub fn init(allocator: std.mem.Allocator, reader: Reader) !_TokenIterator {
                 return .{
                     .allocator = allocator,
                     .reader = reader,
-                    .stringPool = stringPool,
+                    .str = try std.ArrayList(u8).initCapacity(allocator, 4096),
                 };
             }
 
             pub fn deinit(self: _TokenIterator) void {
-                self.stringPool.deinit();
+                self.str.deinit();
             }
 
             fn readNextCharacter(self: *_TokenIterator) !u8 {
                 self.caret += 1;
                 if (self.maybeBuffered) |buffered| {
                     self.maybeBuffered = null;
-                    try self.stringPool.addToString(buffered);
                     return buffered;
                 }
                 const nextCharacter = try self.reader.readByte();
                 self.maybeLast = nextCharacter;
-                try self.stringPool.addToString(nextCharacter);
                 return nextCharacter;
             }
 
@@ -209,26 +80,15 @@ pub const Lexer = struct {
                 self.maybeBuffered = self.maybeLast orelse unreachable;
                 self.maybeLast = null;
                 self.caret -= 1;
-                try self.stringPool.popFromString();
             }
 
             pub fn next(self: *_TokenIterator) !?Token {
                 if (self.inside_tag) {
                     // whitespace is irrelevant inside tags
                     while (isWhitespace(try self.peekNextCharacter())) {
-                        _ = self.readNextCharacter() catch |e| switch (e) {
-                            StringPool.PoolError.NoActiveString => {},
-                            else => return e,
-                        };
+                        _ = try self.readNextCharacter();
                     }
                 }
-
-                self.stringPool.reset() catch |e| switch (e) {
-                    StringPool.PoolError.NoActiveString => {},
-                    else => return e,
-                };
-
-                try self.stringPool.startString();
 
                 return (if (self.inside_tag) self.nextInTag() else self.nextText()) catch |e| switch (e) {
                     error.EndOfStream => return null,
@@ -248,12 +108,12 @@ pub const Lexer = struct {
                             _ = try self.readNextCharacter();
                             if (try self.readNextCharacter() != '-') return LexError.BadlyFormedComment;
                             if (try self.readNextCharacter() != '-') return LexError.BadlyFormedComment;
-                            return try self.readComment();
+                            return try self.readComment(nextChar);
                         }
                         self.inside_tag = true;
                         return try self.readSingle(tag);
                     },
-                    else => return try self.readText(),
+                    else => return try self.readText(nextChar),
                 }
             }
 
@@ -274,54 +134,46 @@ pub const Lexer = struct {
                         return try self.readSingle(.close_elem);
                     },
                     Token.Kind.string => return try self.readString(),
-                    _ => return try self.readIdent(),
+                    _ => return try self.readIdent(nextChar),
                 }
             }
 
-            fn createTokenWithContents(self: *_TokenIterator, kind: Token.Kind, start: usize, end: usize) !Token {
-                return Token{
-                    .kind = kind,
-                    .contents = try self.stringPool.finishString(),
-                    .source = .{ .start = start, .end = end },
-                };
-            }
-
-            fn createEmptyToken(self: *_TokenIterator, kind: Token.Kind, start: usize, end: usize) !Token {
-                try self.stringPool.reset();
-                return Token{
-                    .kind = kind,
-                    .contents = "",
-                    .source = .{ .start = start, .end = end },
-                };
-            }
-
             fn readSingle(self: *_TokenIterator, kind: Token.Kind) !Token {
-                return self.createEmptyToken(kind, self.caret, self.caret + 1);
+                return Token{
+                    .kind = kind,
+                    .contents = &.{},
+                    .source = .{ .start = self.caret, .end = self.caret + 1 },
+                };
             }
 
             fn readString(self: *_TokenIterator) !Token {
                 const start = self.caret;
-                try self.stringPool.reset();
-                try self.stringPool.startString();
+                self.str.clearRetainingCapacity();
                 while (true) {
                     const nextChar = try self.readNextCharacter();
                     switch (@as(Token.Kind, @enumFromInt(nextChar))) {
                         Token.Kind.string => break,
-                        else => {},
+                        else => {
+                            try self.str.append(nextChar);
+                        },
                     }
                 }
-                _ = try self.stringPool.popFromString();
-                return self.createTokenWithContents(.string, start, self.caret);
+                const contents = try self.allocator.alloc(u8, self.str.items.len);
+                @memcpy(contents, self.str.items);
+                return Token{
+                    .kind = .string,
+                    .contents = contents,
+                    .source = .{ .start = start, .end = self.caret },
+                };
             }
 
-            fn readIdent(self: *_TokenIterator) !Token {
+            fn readIdent(self: *_TokenIterator, char: u8) !Token {
                 const start = self.caret;
+                self.str.clearRetainingCapacity();
+                try self.str.append(char);
                 while (true) {
                     const nextChar = try self.readNextCharacter();
-                    if (isWhitespace(nextChar)) {
-                        try self.moveBackCharacter();
-                        break;
-                    }
+                    if (isWhitespace(nextChar)) break;
                     switch (@as(Token.Kind, @enumFromInt(nextChar))) {
                         Token.Kind.text,
                         Token.Kind.ident,
@@ -331,14 +183,23 @@ pub const Lexer = struct {
                             try self.moveBackCharacter();
                             break;
                         },
-                        _ => continue,
+                        _ => {},
                     }
+                    try self.str.append(nextChar);
                 }
-                return self.createTokenWithContents(.ident, start, self.caret);
+                const contents = try self.allocator.alloc(u8, self.str.items.len);
+                @memcpy(contents, self.str.items);
+                return Token{
+                    .kind = .ident,
+                    .contents = contents,
+                    .source = .{ .start = start, .end = self.caret },
+                };
             }
 
-            fn readText(self: *_TokenIterator) !Token {
+            fn readText(self: *_TokenIterator, char: u8) !Token {
                 const start = self.caret;
+                self.str.clearRetainingCapacity();
+                try self.str.append(char);
                 while (true) {
                     const nextChar = try self.readNextCharacter();
                     switch (@as(Token.Kind, @enumFromInt(nextChar))) {
@@ -350,15 +211,24 @@ pub const Lexer = struct {
                             try self.moveBackCharacter();
                             break;
                         },
-                        .close_elem, .end_children, .string, .eq, .instruction => continue,
-                        _ => continue,
+                        .close_elem, .end_children, .string, .eq, .instruction => {},
+                        _ => {},
                     }
+                    try self.str.append(nextChar);
                 }
-                return self.createTokenWithContents(.text, start, self.caret);
+                const contents = try self.allocator.alloc(u8, self.str.items.len);
+                @memcpy(contents, self.str.items);
+                return Token{
+                    .kind = .text,
+                    .contents = contents,
+                    .source = .{ .start = start, .end = self.caret },
+                };
             }
 
-            pub fn readComment(self: *_TokenIterator) !Token {
+            pub fn readComment(self: *_TokenIterator, char: u8) !Token {
                 const start = self.caret;
+                self.str.clearRetainingCapacity();
+                try self.str.append(char);
                 while (true) {
                     const nextChar = try self.readNextCharacter();
                     switch (@as(Token.Kind, @enumFromInt(nextChar))) {
@@ -367,26 +237,30 @@ pub const Lexer = struct {
                         Token.Kind.comment,
                         => unreachable,
                         .close_elem => {
-                            if (std.mem.endsWith(u8, try self.stringPool.stringSoFar(), "-->")) {
-                                try self.stringPool.popFromString(); // remove last 3 comments
-                                try self.stringPool.popFromString();
-                                try self.stringPool.popFromString();
+                            if (std.mem.bytesToValue(u16, self.str.items[self.str.items.len - 2 ..]) == comptime std.mem.bytesToValue(u16, "--")) {
+                                _ = self.str.pop();
+                                _ = self.str.pop();
                                 break;
                             }
-                            continue;
                         },
-                        .open_elem, .end_children, .string, .eq, .instruction => continue,
-                        _ => continue,
+                        .open_elem, .end_children, .string, .eq, .instruction => {},
+                        _ => {},
                     }
+                    try self.str.append(nextChar);
                 }
-                return self.createTokenWithContents(.text, start, self.caret);
+                const contents = try self.allocator.alloc(u8, self.str.items.len);
+                @memcpy(contents, self.str.items);
+                return Token{
+                    .kind = .comment,
+                    .contents = contents,
+                    .source = .{ .start = start, .end = self.caret },
+                };
             }
         };
     }
 
     pub fn tokenIterator(allocator: std.mem.Allocator, reader: anytype) !TokenIterator(@TypeOf(reader)) {
-        const stringPool = try StringPool.init(allocator);
-        return TokenIterator(@TypeOf(reader)).init(allocator, reader, stringPool);
+        return try TokenIterator(@TypeOf(reader)).init(allocator, reader);
     }
 };
 
@@ -525,7 +399,7 @@ pub const Document = struct {
                         .open_elem => {
                             if (try buildEndingTag(self)) |tagName| {
                                 const openTag = maybeOpenTag orelse return AstError.InvalidClosingTag;
-                                if (tagName.ptr == openTag.ptr) {
+                                if (std.mem.eql(u8, tagName, openTag)) {
                                     return children.toOwnedSlice();
                                 }
                                 return AstError.InvalidClosingTag;

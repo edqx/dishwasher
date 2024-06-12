@@ -10,10 +10,10 @@ I needed a faster XML parser than the ones that were available, and I didn't nee
 Here are the results on my computer in different optimisation modes (i9-14900kf) when parsing the [OpenGL XML Spec document](https://github.com/KhronosGroup/OpenGL-Registry/blob/main/xml/gl.xml) fully, averaged over 100 runs for each (rounded to 2sf):
 | Optimise Mode | Min | Max | Avg |
 |-|-|-|-|
-| `Debug` | `0.340s` | `0.830s` | `0.540s` |
-| `ReleaseSafe` | `0.028s` | `0.120s` | `0.046s` |
-| `ReleaseSmall` | `0.046s` | `0.150s` | `0.067s` |
-| `ReleaseFast` | `0.023s` | `0.089s` | `0.027s` |
+| `Debug` | `0.190s` | `0.500s` | `0.320s` |
+| `ReleaseSafe` | `0.018s` | `0.038s` | `0.024s` |
+| `ReleaseSmall` | `0.026s` | `0.150s` | `0.046s` |
+| `ReleaseFast` | `0.018s` | `0.140s` | `0.031s` |
 
 ### Usage
 #### Example

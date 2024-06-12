@@ -7,7 +7,7 @@ pub fn build(b: *std.Build) void {
     const dishwasher = b.dependency("dishwasher", .{});
 
     const exe = b.addExecutable(.{
-        .name = "zig-dishwasher",
+        .name = "dishwasher-benchmarks",
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
