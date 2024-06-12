@@ -647,7 +647,7 @@ pub const Document = struct {
                 }
                 return try arr.toOwnedSlice();
             }
-            
+
             const PopulateError = error{ MissingAttribute, MissingChild, NoOptionsUsed };
 
             fn populateValueTypeShapeImpl(self: Element, comptime T: type, comptime shape: *const Shape, allocator: std.mem.Allocator, val: *T) !void {
@@ -709,16 +709,11 @@ pub const Document = struct {
                             return;
                         }
                         val.* = while (i < self.children.len - orderedShapes.len) : (i += 1) {
-                            const childrenSlice = self.children[i..i+orderedShapes.len];
+                            const childrenSlice = self.children[i .. i + orderedShapes.len];
                             var tuple: resolveNullType(T) = undefined;
                             var done = true;
                             blk: inline for (0.., orderedShapes) |j, orderedShape| {
-                                const fakeSubElement = Element{
-                                    .tagName = self.tagName,
-                                    .attributes = self.attributes,
-                                    .children = childrenSlice[j..j + 1],
-                                    .is_single = self.is_single
-                                };
+                                const fakeSubElement = Element{ .tagName = self.tagName, .attributes = self.attributes, .children = childrenSlice[j .. j + 1], .is_single = self.is_single };
                                 if (try fakeSubElement.createValueTypeShape(?resolvedTypeInfo.Struct.fields[j].type, orderedShape, allocator)) |branchVal| {
                                     tuple[j] = branchVal;
                                 } else {
@@ -733,7 +728,7 @@ pub const Document = struct {
                         const differentTypes = comptime blk: {
                             var shapeTypes: []const type = &.{};
                             for (disjShapes) |branch| {
-                                shapeTypes = shapeTypes ++ &[_]type{ ShapeType(branch) };
+                                shapeTypes = shapeTypes ++ &[_]type{ShapeType(branch)};
                             }
                             break :blk !std.mem.allEqual(type, shapeTypes, shapeTypes[0]);
                         };
@@ -958,7 +953,7 @@ pub fn ShapeType(comptime shape: anytype) type {
             for (0.., orderedShapes) |i, child| {
                 fields = fields ++ &[_]std.builtin.Type.StructField{
                     std.builtin.Type.StructField{
-                        .name = std.fmt.comptimePrint("{}", .{ i }),
+                        .name = std.fmt.comptimePrint("{}", .{i}),
                         .type = ShapeType(child),
                         .alignment = @alignOf(ShapeType(child)),
                         .default_value = null,
@@ -981,29 +976,18 @@ pub fn ShapeType(comptime shape: anytype) type {
         .disj => |disjShapes| blk: {
             var shapeTypes: []type = &.{};
             for (disjShapes) |branch| {
-                shapeTypes = shapeTypes ++ &[_]type{ ShapeType(branch) };
+                shapeTypes = shapeTypes ++ &[_]type{ShapeType(branch)};
             }
             if (std.mem.allEqual(type, shapeTypes, shapeTypes[0])) {
                 return shapeTypes[0];
             }
             var fields: []std.builtin.Type.UnionField = &.{};
             for (0.., shapeTypes) |i, shapeType| {
-                fields = fields ++ &[]std.builtin.Type.UnionField{
-                    std.builtin.Type.UnionField{
-                        .name = std.fmt.comptimePrint("{s}", .{ i }),
-                        .type = shapeType,
-                        .alignment = @alignOf(shapeType)
-                    }
-                };
+                fields = fields ++ &[]std.builtin.Type.UnionField{std.builtin.Type.UnionField{ .name = std.fmt.comptimePrint("{s}", .{i}), .type = shapeType, .alignment = @alignOf(shapeType) }};
             }
             break :blk @Type(
                 std.builtin.Type{
-                    .Union = .{
-                        .tag_type = null,
-                        .layout = .auto,
-                        .decls = &.{},
-                        .fields = fields
-                    },
+                    .Union = .{ .tag_type = null, .layout = .auto, .decls = &.{}, .fields = fields },
                 },
             );
         },
@@ -1084,7 +1068,7 @@ pub fn pattern(comptime children: anytype) *const Shape {
         const shape = processChild(child);
         if (shape.* == .many or (shape.* == .maybe and shape.maybe.* == .many))
             @compileError("Cannot have 'many elements' shape in a pattern");
-        shapes = shapes ++ &[_]*const Shape{ shape };
+        shapes = shapes ++ &[_]*const Shape{shape};
     }
     return &Shape{ .pattern = shapes };
 }
@@ -1097,7 +1081,7 @@ pub fn disjunction(comptime branches: anytype) *const Shape {
 
     var shapes: []const *const Shape = &.{};
     for (branches) |branch| {
-        shapes = shapes ++ &[_]*const Shape{ processChild(branch) };
+        shapes = shapes ++ &[_]*const Shape{processChild(branch)};
     }
     return &.{ .disj = shapes };
 }
@@ -1108,7 +1092,7 @@ pub fn @"or"(comptime branches: anytype) *const Shape {
 fn resolveNullType(comptime T: type) type {
     return switch (@typeInfo(T)) {
         .Optional => |opt| opt.child,
-        else => T
+        else => T,
     };
 }
 

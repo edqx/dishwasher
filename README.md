@@ -135,8 +135,15 @@ pub fn elementContent(contentMode: Shape.ContentMode) *const Shape;
 // or
 pub fn @"*"(contentMode: Shape.ContentMode) *const Shape;
 
+pub fn pattern(comptime children: anytype) *const Shape;
+// or
+pub fn @"%"(comptime children: anytype) *const Shape;
+
+pub fn disjunction(comptime branches: anytype) *const Shape;
+// or
+pub fn @"or"(comptime branches: anytype) *const Shape;
+
 pub const OwnedDocument = struct {
-    arena: std.heap.ArenaAllocator,
     doc: Document,
 
     pub fn deinit(self: OwnedDocument) void;
@@ -160,9 +167,6 @@ pub const Node = union {
         };
 
         tagName: []const u8,
-        attributes: []Attribute,
-        is_single: bool,
-        children: []Node,
 
         pub fn attributeValueByName(self: Element, name: []const u8) ?[]const u8;
         // or
@@ -192,35 +196,9 @@ pub const Node = union {
 };
 
 pub const Shape = union(enum) {
-    pub const Single = struct {
-        tagName: []const u8,
-        child: *const Shape,
-    };
-
-    pub const Many = struct {
-        tagName: []const u8,
-        child: *const Shape,
-    };
-
-    pub const Attr = struct {
-        attributeName: []const u8,
-    };
-
-    pub const Child = struct {
-        fieldName: [:0]const u8,
-        shape: *const Shape,
-    };
-
     pub const ContentMode = enum(u1) {
         verbatim,
         trim,
     };
-
-    maybe: *const Shape,
-    single: Single,
-    many: Many,
-    attr: Attr,
-    children: []const Child,
-    content: ContentMode,
 };
 ```
