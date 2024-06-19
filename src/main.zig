@@ -524,7 +524,8 @@ pub const Document = struct {
 
             const PopulateError = error{ MissingAttribute, MissingChild, NoOptionsUsed };
 
-            fn populateValueTypeShapeImpl(self: Element, comptime T: type, comptime shape: *const Shape, allocator: std.mem.Allocator, val: *T) !void {
+            fn populateValueTypeShapeImpl(self: Element, comptime T: type, comptime path: []const *const Shape, allocator: std.mem.Allocator, val: *T) (std.mem.Allocator.Error || PopulateError)!void {
+                const shape = path[path.len - 1];
                 const resolvedTypeInfo = @typeInfo(resolveNullType(T));
                 const isNullable = @typeInfo(T) == .Optional;
                 switch (shape.*) {
@@ -532,7 +533,7 @@ pub const Document = struct {
                         if (@typeInfo(T) != .Optional)
                             @compileError("Cannot populate type " ++ @typeName(T) ++ " with an optional value. Hint: field must be optional");
 
-                        try self.populateValueTypeShapeImpl(T, maybeChild, allocator, val);
+                        try self.populateValueTypeShapeImpl(T, path ++ .{maybeChild}, allocator, val);
                     },
                     .single => |singleShape| {
                         const foundElem = self.elementByTagName(singleShape.tagName) orelse if (@typeInfo(T) == .Optional) {
@@ -541,7 +542,7 @@ pub const Document = struct {
                         } else {
                             return PopulateError.MissingChild;
                         };
-                        val.* = try foundElem.createValueTypeShape(T, singleShape.child, allocator);
+                        val.* = try foundElem.createValueTypeShapeImpl(T, path ++ .{singleShape.child}, allocator);
                     },
                     .many => |manyShape| {
                         if (resolvedTypeInfo != .Pointer or resolvedTypeInfo.Pointer.size != .Slice)
@@ -551,7 +552,7 @@ pub const Document = struct {
                         val.* = try allocator.alloc(resolvedTypeInfo.Pointer.child, filtered.len);
                         errdefer allocator.free(val.*);
                         for (0.., filtered) |i, element| {
-                            (val.*)[i] = try element.createValueTypeShape(resolvedTypeInfo.Pointer.child, manyShape.child, allocator);
+                            (val.*)[i] = try element.createValueTypeShapeImpl(resolvedTypeInfo.Pointer.child, path ++ .{manyShape.child}, allocator);
                         }
                     },
                     .attr => |attributeName| {
@@ -571,7 +572,7 @@ pub const Document = struct {
                         if (@TypeOf(T) != type)
                             @compileError("Cannot populate type " ++ @typeName(T) ++ " with element children. Hint: type must a struct");
                         inline for (children) |field| {
-                            @field(val.*, field.fieldName) = try self.createValueTypeShape(@TypeOf(@field(val.*, field.fieldName)), field.shape, allocator);
+                            @field(val.*, field.fieldName) = try self.createValueTypeShapeImpl(@TypeOf(@field(val.*, field.fieldName)), path ++ .{field.shape}, allocator);
                         }
                     },
                     .pattern => |orderedShapes| {
@@ -588,7 +589,7 @@ pub const Document = struct {
                             var done = true;
                             blk: inline for (0.., orderedShapes) |j, orderedShape| {
                                 const fakeSubElement = Element{ .tagName = self.tagName, .attributes = self.attributes, .children = childrenSlice[j .. j + 1], .is_single = self.is_single };
-                                if (try fakeSubElement.createValueTypeShape(?resolvedTypeInfo.Struct.fields[j].type, orderedShape, allocator)) |branchVal| {
+                                if (try fakeSubElement.createValueTypeShapeImpl(?resolvedTypeInfo.Struct.fields[j].type, path ++ .{orderedShape}, allocator)) |branchVal| {
                                     tuple[j] = branchVal;
                                 } else {
                                     done = false; // does not match
@@ -614,14 +615,14 @@ pub const Document = struct {
                                 @compileError("Cannot populate type " ++ @typeInfo(T) ++ "with the given disjunction, as there a mismatched number of union fields to branches");
                             }
                             inline for (0.., disjShapes) |i, branchShape| {
-                                if (try self.createValueTypeShape(?unionFields[i].type, branchShape, allocator)) |branchVal| {
+                                if (try self.createValueTypeShapeImpl(?unionFields[i].type, path ++ .{branchShape}, allocator)) |branchVal| {
                                     val.* = @unionInit(T, unionFields[i].name, branchVal);
                                     return;
                                 }
                             }
                         } else {
                             inline for (disjShapes) |branchShape| {
-                                if (try self.createValueTypeShape(?T, branchShape, allocator)) |branchVal| {
+                                if (try self.createValueTypeShapeImpl(?T, path ++ .{branchShape}, allocator)) |branchVal| {
                                     val.* = branchVal;
                                     return;
                                 }
@@ -632,6 +633,12 @@ pub const Document = struct {
                             return;
                         }
                         return PopulateError.NoOptionsUsed;
+                    },
+                    .link => |steps| {
+                        if (resolvedTypeInfo != .Pointer) @compileError("Cannot populate type " ++ @typeName(T) ++ " with a deferred shape. Hint: type must be a pointer to avoid dependency loops");
+                        const allocated = try allocator.create(resolvedTypeInfo.Pointer.child);
+                        allocated.* = try self.createValueTypeShapeImpl(resolvedTypeInfo.Pointer.child, path[0 .. path.len - steps], allocator);
+                        val.* = allocated;
                     },
                     .content => |contentType| {
                         if (T != []const u8 and T != ?[]const u8)
@@ -648,8 +655,24 @@ pub const Document = struct {
                 }
             }
 
+            fn createValueTypeShapeImpl(self: Element, comptime T: type, comptime path: []const *const Shape, allocator: std.mem.Allocator) !T {
+                var a: T = undefined;
+                switch (@typeInfo(T)) {
+                    .Struct => {
+                        inline for (std.meta.fields(T)) |field| {
+                            if (field.default_value) |defaultValue| {
+                                @field(a, field.name) = @as(*field.type, @ptrCast(@alignCast(defaultValue))).*;
+                            }
+                        }
+                    },
+                    else => {},
+                }
+                try self.populateValueTypeShapeImpl(T, path, allocator, &a);
+                return a;
+            }
+
             pub fn populateValueTypeShape(self: Element, comptime T: type, comptime shape: anytype, allocator: std.mem.Allocator, val: *T) !void {
-                try self.populateValueTypeShapeImpl(T, processChild(shape), allocator, val);
+                try self.populateValueTypeShapeImpl(T, &.{processChild(shape)}, allocator, val);
             }
 
             pub fn populateValueType(self: Element, comptime T: type, allocator: std.mem.Allocator, val: *T) !void {
@@ -788,14 +811,16 @@ pub const Shape = union(enum) {
     children: []const Child,
     pattern: []const *const Shape,
     disj: []const *const Shape,
+    link: usize,
     content: ContentMode,
 };
 
-pub fn ShapeType(comptime shape: anytype) type {
+pub fn ShapeTypeImpl(comptime shape: anytype, comptime path: []const *const Shape) type {
+    const childPath = path ++ .{shape};
     return switch (processChild(shape).*) {
-        .maybe => |maybeShape| ?ShapeType(maybeShape),
-        .single => |singleShape| ShapeType(singleShape.child),
-        .many => |manyShape| []ShapeType(manyShape.child),
+        .maybe => |maybeShape| ?ShapeTypeImpl(maybeShape, childPath),
+        .single => |singleShape| ShapeTypeImpl(singleShape.child, childPath),
+        .many => |manyShape| []ShapeTypeImpl(manyShape.child, childPath),
         .attr => []const u8,
         .children => |childrenShape| blk: {
             var fields: []const std.builtin.Type.StructField = &.{};
@@ -803,8 +828,8 @@ pub fn ShapeType(comptime shape: anytype) type {
                 fields = fields ++ &[_]std.builtin.Type.StructField{
                     std.builtin.Type.StructField{
                         .name = child.fieldName,
-                        .type = ShapeType(child.shape),
-                        .alignment = @alignOf(ShapeType(child.shape)),
+                        .type = ShapeTypeImpl(child.shape, childPath),
+                        .alignment = @alignOf(ShapeTypeImpl(child.shape, childPath)),
                         .default_value = null,
                         .is_comptime = false,
                     },
@@ -828,8 +853,8 @@ pub fn ShapeType(comptime shape: anytype) type {
                 fields = fields ++ &[_]std.builtin.Type.StructField{
                     std.builtin.Type.StructField{
                         .name = std.fmt.comptimePrint("{}", .{i}),
-                        .type = ShapeType(child),
-                        .alignment = @alignOf(ShapeType(child)),
+                        .type = ShapeTypeImpl(child, childPath),
+                        .alignment = @alignOf(ShapeTypeImpl(child, childPath)),
                         .default_value = null,
                         .is_comptime = false,
                     },
@@ -850,7 +875,7 @@ pub fn ShapeType(comptime shape: anytype) type {
         .disj => |disjShapes| blk: {
             var shapeTypes: []type = &.{};
             for (disjShapes) |branch| {
-                shapeTypes = shapeTypes ++ &[_]type{ShapeType(branch)};
+                shapeTypes = shapeTypes ++ &[_]type{ShapeTypeImpl(branch, childPath)};
             }
             if (std.mem.allEqual(type, shapeTypes, shapeTypes[0])) {
                 return shapeTypes[0];
@@ -865,8 +890,13 @@ pub fn ShapeType(comptime shape: anytype) type {
                 },
             );
         },
+        .link => *anyopaque, // todo: try to reference the actual previous type
         .content => []const u8,
     };
+}
+
+pub fn ShapeType(comptime shape: anytype) type {
+    return ShapeTypeImpl(shape, &.{});
 }
 
 pub const XmlShapeIdentifier = "XmlShape";
@@ -961,6 +991,10 @@ pub fn disjunction(comptime branches: anytype) *const Shape {
 }
 pub fn @"or"(comptime branches: anytype) *const Shape {
     return disjunction(branches);
+}
+
+pub fn link(steps: usize) *const Shape {
+    return &.{ .link = steps };
 }
 
 fn resolveNullType(comptime T: type) type {
