@@ -549,11 +549,12 @@ pub const Document = struct {
                             @compileError("Cannot populate type " ++ @typeName(T) ++ " with many elements. Hint: type must be a slice");
 
                         const filtered = try self.elementsByTagNameAlloc(allocator, manyShape.tagName);
-                        val.* = try allocator.alloc(resolvedTypeInfo.Pointer.child, filtered.len);
-                        errdefer allocator.free(val.*);
+                        const out = try allocator.alloc(resolvedTypeInfo.Pointer.child, filtered.len);
+                        errdefer allocator.free(out);
                         for (0.., filtered) |i, element| {
-                            (val.*)[i] = try element.createValueTypeShapeImpl(resolvedTypeInfo.Pointer.child, path ++ .{manyShape.child}, allocator);
+                            out[i] = try element.createValueTypeShapeImpl(resolvedTypeInfo.Pointer.child, path ++ .{manyShape.child}, allocator);
                         }
+                        val.* = out;
                     },
                     .attr => |attributeName| {
                         if (T != []const u8 and T != ?[]const u8)
@@ -571,9 +572,11 @@ pub const Document = struct {
                     .children => |children| {
                         if (@TypeOf(T) != type)
                             @compileError("Cannot populate type " ++ @typeName(T) ++ " with element children. Hint: type must a struct");
+                        var out: T = undefined;
                         inline for (children) |field| {
-                            @field(val.*, field.fieldName) = try self.createValueTypeShapeImpl(@TypeOf(@field(val.*, field.fieldName)), path ++ .{field.shape}, allocator);
+                            @field(out, field.fieldName) = try self.createValueTypeShapeImpl(@TypeOf(@field(val.*, field.fieldName)), path ++ .{field.shape}, allocator);
                         }
+                        val.* = out;
                     },
                     .pattern => |orderedShapes| {
                         var i: usize = 0;
