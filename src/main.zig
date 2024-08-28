@@ -121,7 +121,7 @@ pub const Iter = struct {
                     return Error.UnexpectedEof;
                 }
 
-                switch (self.soruce[self.caret]) {
+                switch (self.source[self.caret]) {
                     '[' => {},
                     '>' => {
                         break;
