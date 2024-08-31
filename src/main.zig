@@ -592,7 +592,7 @@ pub const Document = struct {
                             var done = true;
                             blk: inline for (0.., orderedShapes) |j, orderedShape| {
                                 const fakeSubElement = Element{ .tagName = self.tagName, .attributes = self.attributes, .children = childrenSlice[j .. j + 1], .is_single = self.is_single };
-                                if (try fakeSubElement.createValueTypeShapeImpl(?resolvedTypeInfo.Struct.fields[j].type, path ++ .{orderedShape}, allocator)) |branchVal| {
+                                if (try fakeSubElement.createValueTypeShapeImpl(?resolvedTypeInfo.@"struct".fields[j].type, path ++ .{orderedShape}, allocator)) |branchVal| {
                                     tuple[j] = branchVal;
                                 } else {
                                     done = false; // does not match
@@ -610,10 +610,10 @@ pub const Document = struct {
                             }
                             break :blk !std.mem.allEqual(type, shapeTypes, shapeTypes[0]);
                         };
-                        if (differentTypes or resolvedTypeInfo == .Union) {
-                            if (resolvedTypeInfo != .Union)
+                        if (differentTypes or resolvedTypeInfo == .@"union") {
+                            if (resolvedTypeInfo != .@"union")
                                 @compileError("Cannot populate type " ++ @typeName(T) ++ " with disjunction where the types may be different. Hint: type must be a union");
-                            const unionFields = resolvedTypeInfo.Union.fields;
+                            const unionFields = resolvedTypeInfo.@"union".fields;
                             if (unionFields.len != disjShapes.len) {
                                 @compileError("Cannot populate type " ++ @typeInfo(T) ++ "with the given disjunction, as there a mismatched number of union fields to branches");
                             }
@@ -840,7 +840,7 @@ pub fn ShapeTypeImpl(comptime shape: anytype, comptime path: []const *const Shap
             }
             break :blk @Type(
                 std.builtin.Type{
-                    .Struct = .{
+                    .@"struct" = .{
                         .backing_integer = null,
                         .decls = &.{},
                         .fields = fields,
@@ -865,7 +865,7 @@ pub fn ShapeTypeImpl(comptime shape: anytype, comptime path: []const *const Shap
             }
             break :blk @Type(
                 std.builtin.Type{
-                    .Struct = .{
+                    .@"struct" = .{
                         .backing_integer = null,
                         .decls = &.{},
                         .fields = fields,
@@ -889,7 +889,7 @@ pub fn ShapeTypeImpl(comptime shape: anytype, comptime path: []const *const Shap
             }
             break :blk @Type(
                 std.builtin.Type{
-                    .Union = .{ .tag_type = null, .layout = .auto, .decls = &.{}, .fields = fields },
+                    .@"union" = .{ .tag_type = null, .layout = .auto, .decls = &.{}, .fields = fields },
                 },
             );
         },
