@@ -527,16 +527,16 @@ pub const Document = struct {
             fn populateValueTypeShapeImpl(self: Element, comptime T: type, comptime path: []const *const Shape, allocator: std.mem.Allocator, val: *T) (std.mem.Allocator.Error || PopulateError)!void {
                 const shape = path[path.len - 1];
                 const resolvedTypeInfo = @typeInfo(resolveNullType(T));
-                const isNullable = @typeInfo(T) == .Optional;
+                const isNullable = @typeInfo(T) == .optional;
                 switch (shape.*) {
                     .maybe => |maybeChild| {
-                        if (@typeInfo(T) != .Optional)
+                        if (@typeInfo(T) != .optional)
                             @compileError("Cannot populate type " ++ @typeName(T) ++ " with an optional value. Hint: field must be optional");
 
                         try self.populateValueTypeShapeImpl(T, path ++ .{maybeChild}, allocator, val);
                     },
                     .single => |singleShape| {
-                        const foundElem = self.elementByTagName(singleShape.tagName) orelse if (@typeInfo(T) == .Optional) {
+                        const foundElem = self.elementByTagName(singleShape.tagName) orelse if (@typeInfo(T) == .optional) {
                             val.* = null;
                             return;
                         } else {
@@ -545,14 +545,14 @@ pub const Document = struct {
                         val.* = try foundElem.createValueTypeShapeImpl(T, path ++ .{singleShape.child}, allocator);
                     },
                     .many => |manyShape| {
-                        if (resolvedTypeInfo != .Pointer or resolvedTypeInfo.Pointer.size != .Slice)
+                        if (resolvedTypeInfo != .pointer or resolvedTypeInfo.pointer.size != .Slice)
                             @compileError("Cannot populate type " ++ @typeName(T) ++ " with many elements. Hint: type must be a slice");
 
                         const filtered = try self.elementsByTagNameAlloc(allocator, manyShape.tagName);
-                        const out = try allocator.alloc(resolvedTypeInfo.Pointer.child, filtered.len);
+                        const out = try allocator.alloc(resolvedTypeInfo.pointer.child, filtered.len);
                         errdefer allocator.free(out);
                         for (0.., filtered) |i, element| {
-                            out[i] = try element.createValueTypeShapeImpl(resolvedTypeInfo.Pointer.child, path ++ .{manyShape.child}, allocator);
+                            out[i] = try element.createValueTypeShapeImpl(resolvedTypeInfo.pointer.child, path ++ .{manyShape.child}, allocator);
                         }
                         val.* = out;
                     },
@@ -580,7 +580,7 @@ pub const Document = struct {
                     },
                     .pattern => |orderedShapes| {
                         var i: usize = 0;
-                        if (resolvedTypeInfo != .Struct or !resolvedTypeInfo.Struct.is_tuple)
+                        if (resolvedTypeInfo != .@"struct" or !resolvedTypeInfo.@"struct".is_tuple)
                             @compileError("Cannot populate type " ++ @typeName(T) ++ " with pattern. Hint: type must be a tuple");
                         if (self.children.len < orderedShapes.len) {
                             val.* = if (isNullable) null else return PopulateError.MissingChild;
@@ -638,9 +638,9 @@ pub const Document = struct {
                         return PopulateError.NoOptionsUsed;
                     },
                     .link => |steps| {
-                        if (resolvedTypeInfo != .Pointer) @compileError("Cannot populate type " ++ @typeName(T) ++ " with a deferred shape. Hint: type must be a pointer to avoid dependency loops");
-                        const allocated = try allocator.create(resolvedTypeInfo.Pointer.child);
-                        allocated.* = try self.createValueTypeShapeImpl(resolvedTypeInfo.Pointer.child, path[0 .. path.len - steps], allocator);
+                        if (resolvedTypeInfo != .pointer) @compileError("Cannot populate type " ++ @typeName(T) ++ " with a deferred shape. Hint: type must be a pointer to avoid dependency loops");
+                        const allocated = try allocator.create(resolvedTypeInfo.pointer.child);
+                        allocated.* = try self.createValueTypeShapeImpl(resolvedTypeInfo.pointer.child, path[0 .. path.len - steps], allocator);
                         val.* = allocated;
                     },
                     .content => |contentType| {
@@ -661,7 +661,7 @@ pub const Document = struct {
             fn createValueTypeShapeImpl(self: Element, comptime T: type, comptime path: []const *const Shape, allocator: std.mem.Allocator) !T {
                 var a: T = undefined;
                 switch (@typeInfo(T)) {
-                    .Struct => {
+                    .@"struct" => {
                         inline for (std.meta.fields(T)) |field| {
                             if (field.default_value) |defaultValue| {
                                 @field(a, field.name) = @as(*field.type, @ptrCast(@alignCast(defaultValue))).*;
@@ -685,7 +685,7 @@ pub const Document = struct {
             pub fn createValueTypeShape(self: Element, comptime T: type, comptime shape: anytype, allocator: std.mem.Allocator) !T {
                 var a: T = undefined;
                 switch (@typeInfo(T)) {
-                    .Struct => {
+                    .@"struct" => {
                         inline for (std.meta.fields(T)) |field| {
                             if (field.default_value) |defaultValue| {
                                 @field(a, field.name) = @as(*field.type, @ptrCast(@alignCast(defaultValue))).*;
@@ -912,10 +912,10 @@ pub fn processChild(comptime child: anytype) *const Shape {
     }
 
     switch (@typeInfo(@TypeOf(child))) {
-        .EnumLiteral => {
+        .enum_literal => {
             if (child.* == .content) return &Shape{.content};
         },
-        .Struct => {
+        .@"struct" => {
             var children: []const Shape.Child = &.{};
             for (std.meta.fields(@TypeOf(child))) |field| {
                 children = children ++ &[_]Shape.Child{Shape.Child{ .fieldName = field.name, .shape = @field(child, field.name) }};
@@ -1002,7 +1002,7 @@ pub fn link(steps: usize) *const Shape {
 
 fn resolveNullType(comptime T: type) type {
     return switch (@typeInfo(T)) {
-        .Optional => |opt| opt.child,
+        .optional => |opt| opt.child,
         else => T,
     };
 }
