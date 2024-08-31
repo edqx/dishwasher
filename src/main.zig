@@ -1,162 +1,170 @@
 const std = @import("std");
 
-pub const Error = error{UnexpectedEof};
-
-pub const Diagnostics = struct {
-    pub const DefectKind = enum {
-        commentNotClosed,
-        metaNotClosed,
-        doctypeNotClosed,
-        cDataNotClosed,
+pub const Scanner = struct {
+    pub const Error = error{
+        NoSpaceLeft,
+        UnexpectedEof,
     };
 
-    pub const SyntaxDefect = struct {
-        kind: DefectKind,
-        idx: usize,
+    pub const State = union {
+        pub const Tag = struct {
+            pub const Kind = enum {
+                element,
+                meta,
+                doctype,
+            };
+
+            pub const Inner = union {
+                next_attribute: void,
+                attribute_value: void,
+            };
+
+            kind: Kind,
+            state: Inner,
+        };
+
+        pub const Cdata = struct {};
+
+        default: void,
+        tag: Tag,
+        cdata: Cdata,
     };
 
-    defects: std.ArrayList(SyntaxDefect),
+    pub const Token = struct {
+        pub const Kind = enum {
+            element_open,
+            element_close,
+            element_attribute,
+            element_attribute_value,
+            meta_attribute,
+            meta_attribute_value,
+            doctype,
+            text,
+        };
 
-    pub fn reportSyntaxDefect(self: *Diagnostics, kind: DefectKind, idx: usize) !void {
-        try self.defects.append(.{ .kind = kind, .idx = idx });
+        kind: Kind,
+        inner: []const u8,
+    };
+
+    buffer: []const u8,
+    end_of_input: bool,
+    cursor: usize,
+
+    state: State,
+
+    pub fn peekBytes(self: *Scanner, numBytes: usize) ![]const u8 {
+        const remaining = self.buffer.len - self.cursor;
+        if (remaining < numBytes) {
+            return if (self.end_of_input) Error.UnexpectedEof else Error.NoSpaceLeft;
+        }
+        return self.buffer[self.cursor .. self.cursor + numBytes];
+    }
+
+    pub fn peekChar(self: *Scanner, ahead: usize) !u8 {
+        return (try self.peekBytes(ahead))[ahead - 1];
+    }
+
+    pub fn next(self: *Scanner) !?Token {
+        switch (self.state) {
+            .default => {
+                if (std.mem.eql(u8, try self.peekBytes(4), "<!--")) {}
+                if (std.mem.eql(u8, try self.peekBytes(9), "<!DOCTYPE")) {
+                    self.cursor += 9;
+                    self.state = .{
+                        .tag = .{
+                            .kind = .doctype,
+                            .state = .next_attribute,
+                        },
+                    };
+                    return try self.next();
+                }
+                if (std.mem.eql(u8, try self.peekBytes(5), "<?xml")) {
+                    self.cursor += 5;
+                    self.state = .{
+                        .tag = .{
+                            .kind = .meta,
+                            .state = .next_attribute,
+                        },
+                    };
+                    return try self.next();
+                }
+                if (std.mem.eql(u8, try self.peekBytes(1), "<")) {
+                    var tag_name_length: usize = 0;
+                    while (true) : (tag_name_length += 1) {
+                        const char = try self.peekChar(1 + tag_name_length + 1);
+                        switch (char) {
+                            ' ', '\n', '\r' => break,
+                            '/', '>' => break,
+                        }
+                    }
+                    const tagName = self.buffer[self.cursor .. self.cursor + 1 + tag_name_length];
+                    self.cursor += 1 + tag_name_length;
+                    self.state = .{
+                        .tag = .{
+                            .kind = .element,
+                            .state = .next_attribute,
+                        },
+                    };
+                    return .{
+                        .kind = .element_open,
+                        .inner = tagName,
+                    };
+                }
+            },
+            .tag => |tagDetails| {
+                _ = tagDetails;
+            },
+            .cdata => |cDataDetails| {
+                _ = cDataDetails;
+            },
+        }
     }
 };
 
-fn indexOfNoString(source: []const u8, needle: []const u8) ?usize {
-    var lastIdx = 0;
-    while (true) {
-        const nextIdx = std.mem.indexOfPos(u8, source, lastIdx, needle) orelse return null;
-        var quoteFlag = false;
-        var escapeFlag = false;
-        for (lastIdx..nextIdx) |idx| {
-            switch (source[idx]) {
-                '"' => {
-                    if (escapeFlag) break;
-                    quoteFlag = !quoteFlag;
-                },
-                '\\' => {
-                    escapeFlag = !escapeFlag;
-                    continue;
-                },
+pub fn Reader(comptime ReaderType: type, comptime bufferSize: usize) type {
+    return struct {
+        const _Reader = @This();
+
+        buffer: [bufferSize]u8,
+        reader: ReaderType,
+        scanner: Scanner,
+
+        pub fn init(inner: ReaderType) !_Reader {
+            return _Reader{
+                .buffer = undefined,
+                .reader = inner,
+                .scanner = .{ .buffer = &.{}, .cursor = 0 },
+            };
+        }
+
+        pub fn next(self: *_Reader) !?Scanner.Token {
+            while (true) {
+                return self.scanner.next() catch |e| switch (e) {
+                    error.NoSpaceLeft => {
+                        self.refillBuffer();
+                        continue;
+                    },
+                    else => return e,
+                };
             }
-            escapeFlag = false;
         }
-        if (!quoteFlag) {
-            return nextIdx;
+
+        fn refillBuffer(self: *_Reader) !void {
+            const remaining = self.scanner.buffer.len - self.scanner.cursor;
+            std.mem.copyForwards(u8, self.buffer[0..remaining], self.buffer[self.scanner.cursor..]);
+            const bytesRead = try self.reader.read(&self.buffer[remaining..]);
+            self.scanner.buffer = self.buffer[0..bytesRead];
+            self.scanner.end_of_input = bytesRead != bufferSize;
         }
-        lastIdx = nextIdx;
-    }
-    return null;
+    };
 }
 
-pub const Iter = struct {
-    pub const Node = union(enum) {
-        pub const Element = struct {
-            tagName: []const u8,
-            inner: []const u8,
-        };
+pub fn reader(inner: anytype) !Reader(@TypeOf(inner), 4096) {
+    return try Reader(@TypeOf(inner), 4096).init(inner);
+}
 
-        pub const Text = struct {
-            contents: []const u8,
+test reader {
+    var fba = std.io.fixedBufferStream(&.{});
 
-            pub fn trimmed() []const u8 {}
-        };
-
-        pub const Comment = struct {
-            contents: []const u8,
-        };
-
-        pub const Meta = struct {
-            inner: []const u8,
-        };
-
-        pub const Doctype = struct {
-            inner: []const u8,
-        };
-
-        pub const Cdata = struct {
-            inner: []const u8,
-        };
-
-        element: Element,
-        text: Text,
-        comment: Comment,
-        meta: Meta,
-        docType: Doctype,
-        cData: Cdata,
-    };
-
-    source: []const u8,
-    diagnostics: Diagnostics,
-    caret: usize,
-
-    fn readTag(self: *Iter) !?Node {
-        std.debug.assert(self.source[self.caret] == '<');
-        self.caret += 1;
-        if (std.mem.eql(u8, self.source[self.caret .. self.caret + 3], "!--")) {
-            const endCommentIdx = std.mem.indexOf(u8, self.source[self.caret + 3 ..], "-->") orelse {
-                try self.diagnostics.reportSyntaxDefect(.commentNotClosed, self.caret - 1);
-                return Error.UnexpectedEof;
-            };
-            const contents = self.source[self.caret + 4 .. endCommentIdx];
-            self.caret = endCommentIdx + 3;
-            return .{ .comment = .{ .contents = contents } };
-        }
-
-        if (std.mem.eql(u8, self.source[self.caret .. self.caret + 4], "?xml")) {
-            const endMetaIdx = indexOfNoString(self.source[self.caret + 2 ..], "?>") orelse {
-                try self.diagnostics.reportSyntaxDefect(.commentNotClosed, self.caret - 1);
-                return Error.UnexpectedEof;
-            };
-            const inner = self.source[self.caret + 5 .. endMetaIdx];
-            self.caret = endMetaIdx + 2;
-            return .{ .meta = .{ .inner = inner } };
-        }
-
-        if (std.mem.eql(u8, self.source[self.caret .. self.caret + 8], "!DOCTYPE")) {
-            const startIdx = self.caret;
-            while (true) : (self.caret += 1) {
-                if (self.caret >= self.source.len) {
-                    try self.diagnostics.reportSyntaxDefect(.doctypeNotClosed, startIdx - 1);
-                    return Error.UnexpectedEof;
-                }
-
-                switch (self.source[self.caret]) {
-                    '[' => {},
-                    '>' => {
-                        break;
-                    },
-                    else => {},
-                }
-            }
-            const inner = self.source[startIdx + 9 .. self.caret];
-            self.caret += 1;
-            return .{ .docType = .{ .inner = inner } };
-        }
-
-        if (std.mem.eql(u8, self.source[self.caret .. self.caret + 9], "<![CDATA[")) {
-            const endCdataIdx = std.mem.indexOf(u8, self.source[self.caret + 3 ..], "]]>") orelse {
-                try self.diagnostics.reportSyntaxDefect(.cDataNotClosed, self.caret - 1);
-                return Error.UnexpectedEof;
-            };
-            const inner = self.source[self.caret + 4 .. endCdataIdx];
-            self.caret = endCdataIdx + 3;
-            return .{ .cData = .{ .inner = inner } };
-        }
-    }
-
-    fn readText(self: *Iter) !?Node {
-        self.caret -= 1;
-    }
-
-    pub fn next(self: *Iter) !?Node {
-        if (self.caret >= self.source.len) return null;
-
-        const nextChar = self.source[self.caret];
-
-        return switch (nextChar) {
-            '<' => self.readTag(),
-            else => self.readText(),
-        };
-    }
-};
+    _ = try reader(fba.reader());
+}
