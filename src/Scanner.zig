@@ -332,7 +332,7 @@ pub fn StaticBufferReader(comptime ReaderType: type, comptime bufferSize: usize)
         reader: ReaderType,
         scanner: Scanner,
 
-        pub fn init(inner: ReaderType) !_Reader {
+        pub fn init(inner: ReaderType) _Reader {
             return _Reader{
                 .buffer = undefined,
                 .reader = inner,
@@ -369,17 +369,6 @@ pub fn StaticBufferReader(comptime ReaderType: type, comptime bufferSize: usize)
     };
 }
 
-pub fn staticBufferReader(inner: anytype) !StaticBufferReader(@TypeOf(inner), 1024) {
-    return try StaticBufferReader(@TypeOf(inner), 1024).init(inner);
-}
-
-test staticBufferReader {
-    const buf = "<div lord=\"jesus\"><p>hello my name</p> is <input/>barney and I am a doggy woggy</div>";
-    var fba = std.io.fixedBufferStream(buf);
-
-    var xmlReader = try staticBufferReader(fba.reader());
-
-    while (try xmlReader.next()) |token| {
-        std.debug.print("token: {}\n", .{token});
-    }
+pub fn staticBufferReader(inner: anytype) StaticBufferReader(@TypeOf(inner), 1024) {
+    return StaticBufferReader(@TypeOf(inner), 1024).init(inner);
 }
