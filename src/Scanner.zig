@@ -10,26 +10,17 @@ pub const Error = error{
 };
 
 pub const State = union(enum) {
-    pub const Tag = struct {
-        pub const Kind = enum {
-            element,
-            meta,
-            doctype,
-        };
-
-        pub const Inner = union(enum) {
-            next_attribute: void,
-            attribute_value: void,
-        };
-
-        kind: Kind,
-        state: Inner,
+    pub const TagState = union(enum) {
+        next_attribute: void,
+        attribute_value: void,
     };
 
     pub const Cdata = struct {};
 
     default: void,
-    tag: Tag,
+    comment: void,
+    meta: TagState,
+    elem: TagState,
     cdata: Cdata,
 };
 
@@ -40,6 +31,8 @@ pub const Token = struct {
         element_close_self,
         element_attribute,
         element_attribute_value,
+        comment_open,
+        comment_close,
         meta_attribute,
         meta_attribute_value,
         doctype,
@@ -98,16 +91,25 @@ pub fn next(self: *Scanner) !?Token {
     switch (self.state) {
         .default => {
             if (try self.peekChar(1) == '<') {
-                if (std.mem.eql(u8, try self.peekBytes(4), "<!--")) {}
+                if (std.mem.eql(u8, try self.peekBytes(4), "<!--")) {
+                    const initial_pos = self.advanceCursor(4);
+                    errdefer self.setCursor(initial_pos);
+
+                    self.state = .comment;
+                    errdefer self.state = .default;
+
+                    return .{
+                        .kind = .comment_open,
+                        .inner = &.{},
+                        .start_pos = start_pos,
+                        .end_pos = self.global_cursor,
+                    };
+                }
+
                 if (std.mem.eql(u8, try self.peekBytes(9), "<!DOCTYPE")) {
                     const initial_pos = self.advanceCursor(9);
                     errdefer self.setCursor(initial_pos);
-                    self.state = .{
-                        .tag = .{
-                            .kind = .doctype,
-                            .state = .next_attribute,
-                        },
-                    };
+                    self.state = .{ .elem = .next_attribute };
                     errdefer self.state = .default;
 
                     return try self.next();
@@ -116,12 +118,7 @@ pub fn next(self: *Scanner) !?Token {
                     const initial_pos = self.advanceCursor(5);
                     errdefer self.setCursor(initial_pos);
 
-                    self.state = .{
-                        .tag = .{
-                            .kind = .meta,
-                            .state = .next_attribute,
-                        },
-                    };
+                    self.state = .{ .meta = .next_attribute };
                     errdefer self.state = .default;
 
                     return try self.next();
@@ -164,12 +161,7 @@ pub fn next(self: *Scanner) !?Token {
                     const initial_pos = self.advanceCursor(1 + tag_name_length);
                     errdefer self.setCursor(initial_pos);
 
-                    self.state = .{
-                        .tag = .{
-                            .kind = .element,
-                            .state = .next_attribute,
-                        },
-                    };
+                    self.state = .{ .elem = .next_attribute };
                     errdefer self.state = .default;
 
                     return .{
@@ -208,7 +200,49 @@ pub fn next(self: *Scanner) !?Token {
                 .end_pos = self.global_cursor,
             };
         },
-        .tag => |tag_details| {
+        .comment => {
+            if (std.mem.eql(u8, try self.peekBytes(3), "-->")) {
+                const initial_pos = self.advanceCursor(3);
+                errdefer self.setCursor(initial_pos);
+
+                self.state = .default;
+                errdefer self.state = .comment;
+
+                return .{
+                    .kind = .comment_close,
+                    .inner = &.{},
+                    .start_pos = start_pos,
+                    .end_pos = self.global_cursor,
+                };
+            }
+
+            var text_chunk_length: usize = 0;
+            while (true) : (text_chunk_length += 1) {
+                if (std.mem.endsWith(u8, try self.peekBytes(text_chunk_length + 3), "-->")) {
+                    break;
+                }
+                _ = self.peekChar(text_chunk_length + 1) catch |e| {
+                    switch (e) {
+                        error.NoSpaceLeft => break,
+                        else => return e,
+                    }
+                } orelse break;
+            }
+
+            if (text_chunk_length == 0) return null;
+
+            const text_chunk = self.buffer[self.cursor .. self.cursor + text_chunk_length];
+            const initial_pos = self.advanceCursor(text_chunk_length);
+            errdefer self.setCursor(initial_pos);
+
+            return .{
+                .kind = .text_chunk,
+                .inner = text_chunk,
+                .start_pos = start_pos,
+                .end_pos = self.global_cursor,
+            };
+        },
+        inline .elem, .meta => |elem_state| {
             var num_whitespace: usize = 0;
             while (true) : (num_whitespace += 1) {
                 const char = try self.peekChar(num_whitespace + 1) orelse return Error.UnexpectedEof;
@@ -220,32 +254,51 @@ pub fn next(self: *Scanner) !?Token {
             const initial_pos = self.advanceCursor(num_whitespace);
             errdefer self.setCursor(initial_pos);
 
+            const initial_state = self.state;
+
             start_pos = self.global_cursor;
             const firstChar = try self.peekChar(1) orelse return Error.UnexpectedEof;
+            switch (self.state) {
+                .elem => {
+                    if (std.mem.eql(u8, try self.peekBytes(2), "/>")) {
+                        const initial_pos_2 = self.advanceCursor(2);
+                        errdefer self.setCursor(initial_pos_2);
 
-            if (firstChar == '/') {
-                const initial_pos_2 = self.advanceCursor(1);
-                errdefer self.setCursor(initial_pos_2);
+                        self.state = .default;
 
-                return .{
-                    .kind = .element_close_self,
-                    .inner = &.{},
-                    .start_pos = start_pos,
-                    .end_pos = self.global_cursor,
-                };
+                        return .{
+                            .kind = .element_close_self,
+                            .inner = &.{},
+                            .start_pos = start_pos,
+                            .end_pos = self.global_cursor,
+                        };
+                    }
+
+                    if (firstChar == '>') {
+                        const initial_pos_2 = self.advanceCursor(1);
+                        errdefer self.setCursor(initial_pos_2);
+
+                        self.state = .default;
+                        errdefer self.state = initial_state;
+
+                        return try self.next();
+                    }
+                },
+                .meta => {
+                    if (std.mem.eql(u8, try self.peekBytes(2), "?>")) {
+                        const initial_pos_2 = self.advanceCursor(2);
+                        errdefer self.setCursor(initial_pos_2);
+
+                        self.state = .default;
+                        errdefer self.state = initial_state;
+
+                        return try self.next();
+                    }
+                },
+                else => unreachable,
             }
 
-            if (firstChar == '>') {
-                const initial_pos_2 = self.advanceCursor(1);
-                errdefer self.setCursor(initial_pos_2);
-
-                self.state = .default;
-                errdefer self.state = .{ .tag = tag_details };
-
-                return try self.next();
-            }
-
-            switch (tag_details.state) {
+            switch (elem_state) {
                 .next_attribute => {
                     var attr_name_length: usize = 0;
                     while (true) : (attr_name_length += 1) {
@@ -279,16 +332,19 @@ pub fn next(self: *Scanner) !?Token {
                     const initial_pos_4 = self.advanceCursor(if (has_value) 1 else 0);
                     errdefer self.setCursor(initial_pos_4);
 
-                    self.state = .{
-                        .tag = .{
-                            .kind = tag_details.kind,
-                            .state = if (has_value) .attribute_value else .next_attribute,
-                        },
+                    self.state = switch (self.state) {
+                        .elem => .{ .elem = if (has_value) .attribute_value else .next_attribute },
+                        .meta => .{ .meta = if (has_value) .attribute_value else .next_attribute },
+                        else => unreachable,
                     };
-                    errdefer self.state = .{ .tag = tag_details };
+                    errdefer self.state = initial_state;
 
                     return .{
-                        .kind = .element_attribute,
+                        .kind = switch (self.state) {
+                            .elem => .element_attribute,
+                            .meta => .meta_attribute,
+                            else => unreachable,
+                        },
                         .inner = attr_name,
                         .start_pos = start_pos,
                         .end_pos = name_end_pos,
@@ -311,16 +367,19 @@ pub fn next(self: *Scanner) !?Token {
                         const initial_pos_3 = self.advanceCursor(attr_value_length + 1);
                         errdefer self.setCursor(initial_pos_3);
 
-                        self.state = .{
-                            .tag = .{
-                                .kind = tag_details.kind,
-                                .state = .next_attribute,
-                            },
+                        self.state = switch (self.state) {
+                            .elem => .{ .elem = .next_attribute },
+                            .meta => .{ .meta = .next_attribute },
+                            else => unreachable,
                         };
-                        errdefer self.state = .{ .tag = tag_details };
+                        errdefer self.state = initial_state;
 
                         return .{
-                            .kind = .element_attribute_value,
+                            .kind = switch (self.state) {
+                                .elem => .element_attribute_value,
+                                .meta => .meta_attribute_value,
+                                else => unreachable,
+                            },
                             .inner = attr_value,
                             .start_pos = start_pos,
                             .end_pos = self.global_cursor,
@@ -343,7 +402,11 @@ pub fn next(self: *Scanner) !?Token {
                     errdefer self.setCursor(initial_pos_2);
 
                     return .{
-                        .kind = .element_attribute_value,
+                        .kind = switch (self.state) {
+                            .elem => .element_attribute_value,
+                            .meta => .meta_attribute_value,
+                            else => unreachable,
+                        },
                         .inner = attr_value,
                         .start_pos = start_pos,
                         .end_pos = self.global_cursor,

@@ -68,7 +68,7 @@ pub const Tree = struct {
                 value: ?[]const u8,
             };
 
-            tagName: []const u8,
+            tag_name: []const u8,
             attributes: []Attr,
             tree: ?Tree,
         };
@@ -81,8 +81,13 @@ pub const Tree = struct {
             }
         };
 
+        pub const Comment = struct {
+            contents: []const u8,
+        };
+
         elem: Elem,
         text: Text,
+        comment: Comment,
     };
 
     children: []Node,
@@ -178,7 +183,7 @@ pub const TreeBuilder = struct {
                 }
 
                 try last.children.append(.{ .elem = .{
-                    .tagName = last.maybe_new_elem_tag_name.?,
+                    .tag_name = last.maybe_new_elem_tag_name.?,
                     .attributes = try last.maybe_new_elem_attributes.?.toOwnedSlice(),
                     .tree = switch (token.kind) {
                         .element_close => .{ .children = children },
@@ -210,6 +215,20 @@ pub const TreeBuilder = struct {
                 attributes.items[attributes.items.len - 1].value =
                     try self.data_allocator.dupe(u8, token.inner);
             },
+            .comment_open => {
+                var last = &self.stack.items[self.stack.items.len - 1];
+                try last.children.append(.{ .comment = .{
+                    .contents = &.{},
+                } });
+            },
+            .comment_close => {
+                var last = &self.stack.items[self.stack.items.len - 1];
+                std.debug.assert(last.children.items.len > 0);
+                std.debug.assert(last.children.items[last.children.items.len - 1] == .comment);
+                try last.children.append(.{ .text = .{
+                    .contents = &.{},
+                } });
+            },
             .meta_attribute => {},
             .meta_attribute_value => {},
             .doctype => {},
@@ -218,7 +237,7 @@ pub const TreeBuilder = struct {
                 if (last.children.items.len > 0) {
                     const last_node = &last.children.items[last.children.items.len - 1];
                     switch (last_node.*) {
-                        .text => |*text_node| {
+                        inline .text, .comment => |*text_node| {
                             defer self.data_allocator.free(text_node.contents);
                             var concat = try self.data_allocator.alloc(u8, text_node.contents.len + token.inner.len);
                             @memcpy(concat[0..text_node.contents.len], text_node.contents);
@@ -256,6 +275,8 @@ pub const TreeBuilder = struct {
 
 fn parseFromSliceImpl(allocator: std.mem.Allocator, slice: []const u8, maybe_diagnostics: ?*Diagnostics) !OwnedTree {
     var arena = std.heap.ArenaAllocator.init(allocator);
+    errdefer arena.deinit();
+
     var scanner = Scanner.fromSlice(slice);
     var builder = try TreeBuilder.init(allocator, arena.allocator(), maybe_diagnostics);
     defer builder.deinit();
@@ -271,16 +292,18 @@ fn parseFromSliceImpl(allocator: std.mem.Allocator, slice: []const u8, maybe_dia
 }
 
 pub fn parseFromSliceDiagnostics(allocator: std.mem.Allocator, slice: []const u8, diagnostics: *Diagnostics) !OwnedTree {
-    const result = try parseFromSliceImpl(allocator, slice, diagnostics);
-    return result;
+    const fromSliceDiagnostics = try parseFromSliceImpl(allocator, slice, diagnostics);
+    return fromSliceDiagnostics;
 }
 
-pub fn parseFromSlice(allocator: std.mem.Allocator, slice: []const u8) !OwnedTree {
+pub fn fromSlice(allocator: std.mem.Allocator, slice: []const u8) !OwnedTree {
     return parseFromSliceImpl(allocator, slice, null);
 }
 
-fn parseFromReaderImpl(allocator: std.mem.Allocator, reader: anytype, maybe_diagnostics: ?*Diagnostics) !OwnedTree {
+fn fromReaderImpl(allocator: std.mem.Allocator, reader: anytype, maybe_diagnostics: ?*Diagnostics) !OwnedTree {
     var arena = std.heap.ArenaAllocator.init(allocator);
+    errdefer arena.deinit();
+
     var xmlReader = Scanner.staticBufferReader(reader);
     var builder = try TreeBuilder.init(allocator, arena.allocator(), maybe_diagnostics);
     defer builder.deinit();
@@ -295,25 +318,26 @@ fn parseFromReaderImpl(allocator: std.mem.Allocator, reader: anytype, maybe_diag
     };
 }
 
-pub fn parseFromReaderDiagnostics(allocator: std.mem.Allocator, reader: anytype, diagnostics: *Diagnostics) !OwnedTree {
-    const result = try parseFromReaderImpl(allocator, reader, diagnostics);
+pub fn fromReaderDiagnostics(allocator: std.mem.Allocator, reader: anytype, diagnostics: *Diagnostics) !OwnedTree {
+    const result = try fromReaderImpl(allocator, reader, diagnostics);
     return result;
 }
 
-pub fn parseFromReader(allocator: std.mem.Allocator, reader: anytype) !OwnedTree {
-    return parseFromReaderImpl(allocator, reader, null);
+pub fn fromReader(allocator: std.mem.Allocator, reader: anytype) !OwnedTree {
+    return fromReaderImpl(allocator, reader, null);
 }
-test parseFromReader {
+
+test fromReader {
     {
         const buf = "<div betrayed-by=\"judas\">jesus <p>christ</p> lord <amen/></div>";
         var fba = std.io.fixedBufferStream(buf);
 
-        const parsed = try parseFromReader(std.testing.allocator, fba.reader());
+        const parsed = try fromReader(std.testing.allocator, fba.reader());
         defer parsed.deinit();
 
         try std.testing.expectEqual(parsed.tree.children.len, 1);
         try std.testing.expect(parsed.tree.children[0] == .elem);
-        try std.testing.expectEqualSlices(u8, parsed.tree.children[0].elem.tagName, "div");
+        try std.testing.expectEqualSlices(u8, parsed.tree.children[0].elem.tag_name, "div");
         try std.testing.expectEqual(parsed.tree.children[0].elem.attributes.len, 1);
         try std.testing.expectEqualSlices(u8, parsed.tree.children[0].elem.attributes[0].name, "betrayed-by");
         try std.testing.expectEqualSlices(u8, parsed.tree.children[0].elem.attributes[0].value.?, "judas");
@@ -324,7 +348,7 @@ test parseFromReader {
         try std.testing.expectEqualSlices(u8, parsed.tree.children[0].elem.tree.?.children[0].text.contents, "jesus ");
 
         try std.testing.expect(parsed.tree.children[0].elem.tree.?.children[1] == .elem);
-        try std.testing.expectEqualSlices(u8, parsed.tree.children[0].elem.tree.?.children[1].elem.tagName, "p");
+        try std.testing.expectEqualSlices(u8, parsed.tree.children[0].elem.tree.?.children[1].elem.tag_name, "p");
         try std.testing.expect(parsed.tree.children[0].elem.tree.?.children[0] == .text);
         try std.testing.expectEqual(parsed.tree.children[0].elem.tree.?.children[1].elem.attributes.len, 0);
         try std.testing.expect(parsed.tree.children[0].elem.tree.?.children[1].elem.tree != null);
@@ -336,7 +360,7 @@ test parseFromReader {
         try std.testing.expectEqualSlices(u8, parsed.tree.children[0].elem.tree.?.children[2].text.contents, " lord ");
 
         try std.testing.expect(parsed.tree.children[0].elem.tree.?.children[3] == .elem);
-        try std.testing.expectEqualSlices(u8, parsed.tree.children[0].elem.tree.?.children[3].elem.tagName, "amen");
+        try std.testing.expectEqualSlices(u8, parsed.tree.children[0].elem.tree.?.children[3].elem.tag_name, "amen");
         try std.testing.expectEqual(parsed.tree.children[0].elem.tree.?.children[3].elem.attributes.len, 0);
         try std.testing.expect(parsed.tree.children[0].elem.tree.?.children[3].elem.tree == null);
     }
@@ -348,7 +372,7 @@ test parseFromReader {
         var diagnostics = Diagnostics.init(std.testing.allocator);
         defer diagnostics.deinit();
 
-        const parsed = try parseFromReaderDiagnostics(std.testing.allocator, fba.reader(), &diagnostics);
+        const parsed = try fromReaderDiagnostics(std.testing.allocator, fba.reader(), &diagnostics);
         defer parsed.deinit();
 
         try std.testing.expectEqual(diagnostics.defects.items.len, 1);
