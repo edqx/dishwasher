@@ -48,11 +48,14 @@ pub const Token = struct {
 
     kind: Kind,
     inner: []const u8,
+    start_pos: usize,
+    end_pos: usize,
 };
 
 buffer: []const u8,
 end_of_input: bool,
 cursor: usize,
+global_cursor: usize,
 
 state: State,
 
@@ -61,6 +64,7 @@ pub fn fromSlice(slice: []const u8) Scanner {
         .buffer = slice,
         .end_of_input = true,
         .cursor = 0,
+        .global_cursor = 0,
         .state = .default,
     };
 }
@@ -79,15 +83,18 @@ fn peekChar(self: *Scanner, ahead: usize) !?u8 {
 }
 
 fn advanceCursor(self: *Scanner, bytes: usize) usize {
+    defer self.global_cursor += bytes;
     defer self.cursor += bytes;
     return self.cursor;
 }
 
 fn setCursor(self: *Scanner, pos: usize) void {
     self.cursor = pos;
+    self.global_cursor = pos;
 }
 
 pub fn next(self: *Scanner) !?Token {
+    var start_pos = self.global_cursor;
     switch (self.state) {
         .default => {
             if (try self.peekChar(1) == '<') {
@@ -139,6 +146,8 @@ pub fn next(self: *Scanner) !?Token {
                     return .{
                         .kind = .element_close,
                         .inner = tag_name,
+                        .start_pos = start_pos,
+                        .end_pos = self.global_cursor,
                     };
                 }
 
@@ -166,6 +175,8 @@ pub fn next(self: *Scanner) !?Token {
                     return .{
                         .kind = .element_open,
                         .inner = tag_name,
+                        .start_pos = start_pos,
+                        .end_pos = self.global_cursor,
                     };
                 }
             }
@@ -193,6 +204,8 @@ pub fn next(self: *Scanner) !?Token {
             return .{
                 .kind = .text_chunk,
                 .inner = text_chunk,
+                .start_pos = start_pos,
+                .end_pos = self.global_cursor,
             };
         },
         .tag => |tag_details| {
@@ -207,13 +220,19 @@ pub fn next(self: *Scanner) !?Token {
             const initial_pos = self.advanceCursor(num_whitespace);
             errdefer self.setCursor(initial_pos);
 
+            start_pos = self.global_cursor;
             const firstChar = try self.peekChar(1) orelse return Error.UnexpectedEof;
 
             if (firstChar == '/') {
                 const initial_pos_2 = self.advanceCursor(1);
                 errdefer self.setCursor(initial_pos_2);
 
-                return .{ .kind = .element_close_self, .inner = &.{} };
+                return .{
+                    .kind = .element_close_self,
+                    .inner = &.{},
+                    .start_pos = start_pos,
+                    .end_pos = self.global_cursor,
+                };
             }
 
             if (firstChar == '>') {
@@ -254,6 +273,8 @@ pub fn next(self: *Scanner) !?Token {
                     const initial_pos_3 = self.advanceCursor(num_whitespace_2);
                     errdefer self.setCursor(initial_pos_3);
 
+                    const name_end_pos = self.global_cursor;
+
                     const has_value = (try self.peekChar(1) orelse return Error.UnexpectedEof) == '=';
                     const initial_pos_4 = self.advanceCursor(if (has_value) 1 else 0);
                     errdefer self.setCursor(initial_pos_4);
@@ -266,7 +287,12 @@ pub fn next(self: *Scanner) !?Token {
                     };
                     errdefer self.state = .{ .tag = tag_details };
 
-                    return .{ .kind = .element_attribute, .inner = attr_name };
+                    return .{
+                        .kind = .element_attribute,
+                        .inner = attr_name,
+                        .start_pos = start_pos,
+                        .end_pos = name_end_pos,
+                    };
                 },
                 .attribute_value => {
                     if (firstChar == '"') {
@@ -293,7 +319,12 @@ pub fn next(self: *Scanner) !?Token {
                         };
                         errdefer self.state = .{ .tag = tag_details };
 
-                        return .{ .kind = .element_attribute_value, .inner = attr_value };
+                        return .{
+                            .kind = .element_attribute_value,
+                            .inner = attr_value,
+                            .start_pos = start_pos,
+                            .end_pos = self.global_cursor,
+                        };
                     }
 
                     var attr_value_length: usize = 0;
@@ -311,7 +342,12 @@ pub fn next(self: *Scanner) !?Token {
                     const initial_pos_2 = self.advanceCursor(attr_value_length);
                     errdefer self.setCursor(initial_pos_2);
 
-                    return .{ .kind = .element_attribute_value, .inner = attr_value };
+                    return .{
+                        .kind = .element_attribute_value,
+                        .inner = attr_value,
+                        .start_pos = start_pos,
+                        .end_pos = self.global_cursor,
+                    };
                 },
             }
         },
@@ -339,6 +375,7 @@ pub fn StaticBufferReader(comptime ReaderType: type, comptime bufferSize: usize)
                 .scanner = .{
                     .buffer = &.{},
                     .cursor = 0,
+                    .global_cursor = 0,
                     .state = .default,
                     .end_of_input = false,
                 },

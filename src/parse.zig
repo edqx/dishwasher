@@ -1,6 +1,65 @@
 const std = @import("std");
 const Scanner = @import("./Scanner.zig");
 
+const Error = error{XmlDefect};
+
+pub const Diagnostics = struct {
+    pub const Range = struct {
+        start: usize,
+        end: usize,
+    };
+
+    pub const Defect = struct {
+        pub const Kind = enum {
+            MissingTagName,
+            TagNeverOpened,
+            TagNeverClosed,
+        };
+
+        kind: Kind,
+        range: Range,
+    };
+
+    defects: std.ArrayList(Defect),
+
+    pub fn init(allocator: std.mem.Allocator) Diagnostics {
+        return .{
+            .defects = std.ArrayList(Defect).init(allocator),
+        };
+    }
+
+    pub fn deinit(self: Diagnostics) void {
+        self.defects.deinit();
+    }
+
+    fn buildRange(tokens: []const Scanner.Token) Range {
+        std.debug.assert(tokens.len > 0);
+
+        var min: usize = std.math.maxInt(usize);
+        var max: usize = 0;
+        for (tokens) |token| {
+            if (token.start_pos < min) min = token.start_pos;
+            if (token.end_pos > max) max = token.end_pos;
+        }
+
+        std.debug.assert(max != std.math.maxInt(usize));
+        std.debug.assert(max >= min);
+
+        return .{ .start = min, .end = max };
+    }
+
+    pub fn reportDefect(self: *Diagnostics, defectKind: Defect.Kind, tokens: []const Scanner.Token) !void {
+        try self.defects.append(.{
+            .kind = defectKind,
+            .range = buildRange(tokens),
+        });
+    }
+
+    pub fn hasDefect(self: Diagnostics) bool {
+        return self.defects.items.len > 0;
+    }
+};
+
 pub const Tree = struct {
     pub const Node = union(enum) {
         pub const Elem = struct {
@@ -40,19 +99,26 @@ pub const OwnedTree = struct {
 
 pub const TreeBuilder = struct {
     const TempTree = struct {
-        new_elem_tag_name: ?[]const u8 = null,
-        new_elem_attributes: ?std.ArrayList(Tree.Node.Elem.Attr) = null,
+        maybe_open_token: ?Scanner.Token,
+        maybe_new_elem_tag_name: ?[]const u8 = null,
+        maybe_new_elem_attributes: ?std.ArrayList(Tree.Node.Elem.Attr) = null,
 
         children: std.ArrayList(Tree.Node),
     };
 
     temp_allocator: std.mem.Allocator,
     data_allocator: std.mem.Allocator,
+    maybe_diagnostics: ?*Diagnostics,
 
     stack: std.ArrayList(TempTree),
 
-    pub fn init(temp_allocator: std.mem.Allocator, data_allocator: std.mem.Allocator) !TreeBuilder {
+    pub fn init(
+        temp_allocator: std.mem.Allocator,
+        data_allocator: std.mem.Allocator,
+        maybe_diagnostics: ?*Diagnostics,
+    ) !TreeBuilder {
         const root: TempTree = .{
+            .maybe_open_token = null,
             .children = std.ArrayList(Tree.Node).init(data_allocator),
         };
         var stack = try std.ArrayList(TempTree).initCapacity(temp_allocator, 8);
@@ -60,6 +126,7 @@ pub const TreeBuilder = struct {
         return .{
             .temp_allocator = temp_allocator,
             .data_allocator = data_allocator,
+            .maybe_diagnostics = maybe_diagnostics,
             .stack = stack,
         };
     }
@@ -68,38 +135,51 @@ pub const TreeBuilder = struct {
         self.stack.deinit();
     }
 
+    fn reportDefectOrExit(self: *TreeBuilder, defectKind: Diagnostics.Defect.Kind, tokens: []const Scanner.Token) !void {
+        const diagnostics = self.maybe_diagnostics orelse return Error.XmlDefect;
+        try diagnostics.reportDefect(defectKind, tokens);
+    }
+
     pub fn feedToken(self: *TreeBuilder, token: Scanner.Token) !void {
         std.debug.assert(self.stack.items.len > 0);
         switch (token.kind) {
             .element_open => {
+                if (token.inner.len == 0) {
+                    try self.reportDefectOrExit(.MissingTagName, &.{token});
+                }
+
                 var last = &self.stack.items[self.stack.items.len - 1];
-                last.new_elem_tag_name = try self.data_allocator.dupe(u8, token.inner);
-                last.new_elem_attributes = std.ArrayList(Tree.Node.Elem.Attr).init(self.data_allocator);
+                last.maybe_new_elem_tag_name = try self.data_allocator.dupe(u8, token.inner);
+                last.maybe_new_elem_attributes = std.ArrayList(Tree.Node.Elem.Attr).init(self.data_allocator);
                 try self.stack.append(.{
+                    .maybe_open_token = token,
                     .children = std.ArrayList(Tree.Node).init(self.data_allocator),
                 });
             },
             .element_close, .element_close_self => {
                 var last = &self.stack.items[self.stack.items.len - 1];
-                std.debug.assert(last.new_elem_tag_name == null);
-                std.debug.assert(last.new_elem_attributes == null);
+                std.debug.assert(last.maybe_new_elem_tag_name == null);
+                std.debug.assert(last.maybe_new_elem_attributes == null);
 
+                if (self.stack.items.len == 1) {
+                    try self.reportDefectOrExit(.TagNeverOpened, &.{token});
+                    return;
+                }
                 const children = try last.children.toOwnedSlice();
                 _ = self.stack.pop();
-                if (self.stack.items.len == 0) {
-                    std.debug.panic("Unexpected closing tag on root", .{});
-                }
                 last = &self.stack.items[self.stack.items.len - 1];
-                std.debug.assert(last.new_elem_tag_name != null);
-                std.debug.assert(last.new_elem_attributes != null);
+                std.debug.assert(last.maybe_new_elem_tag_name != null);
+                std.debug.assert(last.maybe_new_elem_attributes != null);
 
                 if (token.kind == .element_close) {
-                    std.debug.assert(std.mem.eql(u8, last.new_elem_tag_name.?, token.inner));
+                    if (!std.mem.eql(u8, last.maybe_new_elem_tag_name.?, token.inner)) {
+                        try self.reportDefectOrExit(.TagNeverOpened, &.{token});
+                    }
                 }
 
                 try last.children.append(.{ .elem = .{
-                    .tagName = last.new_elem_tag_name.?,
-                    .attributes = try last.new_elem_attributes.?.toOwnedSlice(),
+                    .tagName = last.maybe_new_elem_tag_name.?,
+                    .attributes = try last.maybe_new_elem_attributes.?.toOwnedSlice(),
                     .tree = switch (token.kind) {
                         .element_close => .{ .children = children },
                         .element_close_self => null,
@@ -107,15 +187,15 @@ pub const TreeBuilder = struct {
                     },
                 } });
 
-                last.new_elem_tag_name = null;
-                last.new_elem_attributes = null;
+                last.maybe_new_elem_tag_name = null;
+                last.maybe_new_elem_attributes = null;
             },
             .element_attribute => {
                 std.debug.assert(self.stack.items.len > 1);
                 var last2 = &self.stack.items[self.stack.items.len - 2];
-                std.debug.assert(last2.new_elem_attributes != null);
+                std.debug.assert(last2.maybe_new_elem_attributes != null);
 
-                try last2.new_elem_attributes.?.append(.{
+                try last2.maybe_new_elem_attributes.?.append(.{
                     .name = try self.data_allocator.dupe(u8, token.inner),
                     .value = null,
                 });
@@ -123,8 +203,8 @@ pub const TreeBuilder = struct {
             .element_attribute_value => {
                 std.debug.assert(self.stack.items.len > 1);
                 var last2 = &self.stack.items[self.stack.items.len - 2];
-                std.debug.assert(last2.new_elem_attributes != null);
-                const attributes = &last2.new_elem_attributes.?;
+                std.debug.assert(last2.maybe_new_elem_attributes != null);
+                const attributes = &last2.maybe_new_elem_attributes.?;
                 std.debug.assert(attributes.items.len > 0);
 
                 attributes.items[attributes.items.len - 1].value =
@@ -157,11 +237,16 @@ pub const TreeBuilder = struct {
     }
 
     pub fn finalise(self: *TreeBuilder) !Tree {
-        std.debug.assert(self.stack.items.len == 1);
+        std.debug.assert(self.stack.items.len > 0);
+
+        if (self.stack.items.len > 1) {
+            for (self.stack.items[1..]) |subtree| {
+                std.debug.assert(subtree.maybe_open_token != null);
+                try self.reportDefectOrExit(.TagNeverClosed, &.{subtree.maybe_open_token.?});
+            }
+        }
 
         var root = self.stack.pop();
-        std.debug.assert(root.new_elem_tag_name == null);
-        std.debug.assert(root.new_elem_attributes == null);
 
         return .{
             .children = try root.children.toOwnedSlice(),
@@ -169,10 +254,10 @@ pub const TreeBuilder = struct {
     }
 };
 
-pub fn parseFromSlice(allocator: std.mem.Allocator, slice: []const u8) !OwnedTree {
+fn parseFromSliceImpl(allocator: std.mem.Allocator, slice: []const u8, maybe_diagnostics: ?*Diagnostics) !OwnedTree {
     var arena = std.heap.ArenaAllocator.init(allocator);
     var scanner = Scanner.fromSlice(slice);
-    var builder = try TreeBuilder.init(allocator, arena.allocator());
+    var builder = try TreeBuilder.init(allocator, arena.allocator(), maybe_diagnostics);
     defer builder.deinit();
 
     while (try scanner.next()) |token| {
@@ -185,10 +270,19 @@ pub fn parseFromSlice(allocator: std.mem.Allocator, slice: []const u8) !OwnedTre
     };
 }
 
-pub fn parseFromReader(allocator: std.mem.Allocator, reader: anytype) !OwnedTree {
+pub fn parseFromSliceDiagnostics(allocator: std.mem.Allocator, slice: []const u8, diagnostics: *Diagnostics) !OwnedTree {
+    const result = try parseFromSliceImpl(allocator, slice, diagnostics);
+    return result;
+}
+
+pub fn parseFromSlice(allocator: std.mem.Allocator, slice: []const u8) !OwnedTree {
+    return parseFromSliceImpl(allocator, slice, null);
+}
+
+fn parseFromReaderImpl(allocator: std.mem.Allocator, reader: anytype, maybe_diagnostics: ?*Diagnostics) !OwnedTree {
     var arena = std.heap.ArenaAllocator.init(allocator);
     var xmlReader = Scanner.staticBufferReader(reader);
-    var builder = try TreeBuilder.init(allocator, arena.allocator());
+    var builder = try TreeBuilder.init(allocator, arena.allocator(), maybe_diagnostics);
     defer builder.deinit();
 
     while (try xmlReader.next()) |token| {
@@ -201,39 +295,62 @@ pub fn parseFromReader(allocator: std.mem.Allocator, reader: anytype) !OwnedTree
     };
 }
 
+pub fn parseFromReaderDiagnostics(allocator: std.mem.Allocator, reader: anytype, diagnostics: *Diagnostics) !OwnedTree {
+    const result = try parseFromReaderImpl(allocator, reader, diagnostics);
+    return result;
+}
+
+pub fn parseFromReader(allocator: std.mem.Allocator, reader: anytype) !OwnedTree {
+    return parseFromReaderImpl(allocator, reader, null);
+}
 test parseFromReader {
-    const buf = "<div betrayed-by=\"judas\">jesus <p>christ</p> lord <amen/></div>";
-    var fba = std.io.fixedBufferStream(buf);
+    {
+        const buf = "<div betrayed-by=\"judas\">jesus <p>christ</p> lord <amen/></div>";
+        var fba = std.io.fixedBufferStream(buf);
 
-    const parsed = try parseFromReader(std.testing.allocator, fba.reader());
-    defer parsed.deinit();
+        const parsed = try parseFromReader(std.testing.allocator, fba.reader());
+        defer parsed.deinit();
 
-    try std.testing.expectEqual(parsed.tree.children.len, 1);
-    try std.testing.expect(parsed.tree.children[0] == .elem);
-    try std.testing.expectEqualSlices(u8, parsed.tree.children[0].elem.tagName, "div");
-    try std.testing.expectEqual(parsed.tree.children[0].elem.attributes.len, 1);
-    try std.testing.expectEqualSlices(u8, parsed.tree.children[0].elem.attributes[0].name, "betrayed-by");
-    try std.testing.expectEqualSlices(u8, parsed.tree.children[0].elem.attributes[0].value.?, "judas");
-    try std.testing.expect(parsed.tree.children[0].elem.tree != null);
-    try std.testing.expectEqual(parsed.tree.children[0].elem.tree.?.children.len, 4);
+        try std.testing.expectEqual(parsed.tree.children.len, 1);
+        try std.testing.expect(parsed.tree.children[0] == .elem);
+        try std.testing.expectEqualSlices(u8, parsed.tree.children[0].elem.tagName, "div");
+        try std.testing.expectEqual(parsed.tree.children[0].elem.attributes.len, 1);
+        try std.testing.expectEqualSlices(u8, parsed.tree.children[0].elem.attributes[0].name, "betrayed-by");
+        try std.testing.expectEqualSlices(u8, parsed.tree.children[0].elem.attributes[0].value.?, "judas");
+        try std.testing.expect(parsed.tree.children[0].elem.tree != null);
+        try std.testing.expectEqual(parsed.tree.children[0].elem.tree.?.children.len, 4);
 
-    try std.testing.expect(parsed.tree.children[0].elem.tree.?.children[0] == .text);
-    try std.testing.expectEqualSlices(u8, parsed.tree.children[0].elem.tree.?.children[0].text.contents, "jesus ");
+        try std.testing.expect(parsed.tree.children[0].elem.tree.?.children[0] == .text);
+        try std.testing.expectEqualSlices(u8, parsed.tree.children[0].elem.tree.?.children[0].text.contents, "jesus ");
 
-    try std.testing.expect(parsed.tree.children[0].elem.tree.?.children[1] == .elem);
-    try std.testing.expectEqualSlices(u8, parsed.tree.children[0].elem.tree.?.children[1].elem.tagName, "p");
-    try std.testing.expect(parsed.tree.children[0].elem.tree.?.children[0] == .text);
-    try std.testing.expectEqual(parsed.tree.children[0].elem.tree.?.children[1].elem.attributes.len, 0);
-    try std.testing.expect(parsed.tree.children[0].elem.tree.?.children[1].elem.tree != null);
-    try std.testing.expectEqual(parsed.tree.children[0].elem.tree.?.children[1].elem.tree.?.children.len, 1);
-    try std.testing.expect(parsed.tree.children[0].elem.tree.?.children[1].elem.tree.?.children[0] == .text);
-    try std.testing.expectEqualSlices(u8, parsed.tree.children[0].elem.tree.?.children[1].elem.tree.?.children[0].text.contents, "christ");
+        try std.testing.expect(parsed.tree.children[0].elem.tree.?.children[1] == .elem);
+        try std.testing.expectEqualSlices(u8, parsed.tree.children[0].elem.tree.?.children[1].elem.tagName, "p");
+        try std.testing.expect(parsed.tree.children[0].elem.tree.?.children[0] == .text);
+        try std.testing.expectEqual(parsed.tree.children[0].elem.tree.?.children[1].elem.attributes.len, 0);
+        try std.testing.expect(parsed.tree.children[0].elem.tree.?.children[1].elem.tree != null);
+        try std.testing.expectEqual(parsed.tree.children[0].elem.tree.?.children[1].elem.tree.?.children.len, 1);
+        try std.testing.expect(parsed.tree.children[0].elem.tree.?.children[1].elem.tree.?.children[0] == .text);
+        try std.testing.expectEqualSlices(u8, parsed.tree.children[0].elem.tree.?.children[1].elem.tree.?.children[0].text.contents, "christ");
 
-    try std.testing.expect(parsed.tree.children[0].elem.tree.?.children[2] == .text);
-    try std.testing.expectEqualSlices(u8, parsed.tree.children[0].elem.tree.?.children[2].text.contents, " lord ");
+        try std.testing.expect(parsed.tree.children[0].elem.tree.?.children[2] == .text);
+        try std.testing.expectEqualSlices(u8, parsed.tree.children[0].elem.tree.?.children[2].text.contents, " lord ");
 
-    try std.testing.expect(parsed.tree.children[0].elem.tree.?.children[3] == .elem);
-    try std.testing.expectEqualSlices(u8, parsed.tree.children[0].elem.tree.?.children[3].elem.tagName, "amen");
-    try std.testing.expectEqual(parsed.tree.children[0].elem.tree.?.children[3].elem.attributes.len, 0);
-    try std.testing.expect(parsed.tree.children[0].elem.tree.?.children[3].elem.tree == null);
+        try std.testing.expect(parsed.tree.children[0].elem.tree.?.children[3] == .elem);
+        try std.testing.expectEqualSlices(u8, parsed.tree.children[0].elem.tree.?.children[3].elem.tagName, "amen");
+        try std.testing.expectEqual(parsed.tree.children[0].elem.tree.?.children[3].elem.attributes.len, 0);
+        try std.testing.expect(parsed.tree.children[0].elem.tree.?.children[3].elem.tree == null);
+    }
+
+    {
+        const buf = "<div><p></p>";
+        var fba = std.io.fixedBufferStream(buf);
+
+        var diagnostics = Diagnostics.init(std.testing.allocator);
+        defer diagnostics.deinit();
+
+        const parsed = try parseFromReaderDiagnostics(std.testing.allocator, fba.reader(), &diagnostics);
+        defer parsed.deinit();
+
+        try std.testing.expectEqual(diagnostics.defects.items.len, 1);
+    }
 }
