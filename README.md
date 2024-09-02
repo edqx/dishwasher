@@ -101,17 +101,28 @@ const Person = struct {
         .location = .{
             .one_of,
             .{ .element, "house", .content },
-            .{ .element, "residence", .content },
+            .{ .element, "work", .content },
+            .none,
         },
+        .apprentice = .{ .maybe, .{ .element, "apprentice", Person } },
+        .children = .{ .elements, "child", Person },
     };
 
     name: []const u8,
     age: []const u8,
-    jobs: []Job,
+    jobs: []struct {
+        start_date: []const u8,
+        end_date: []const u8,
+        title: []const u8,
+        fired: bool,
+    },
     location: union(enum) {
         house: []const u8,
-        residence: []const u8,
+        work: []const u8,
+        none: void,
     },
+    apprentice: ?*Person,
+    children: []Person,
 };
 
 pub const Register = struct {
