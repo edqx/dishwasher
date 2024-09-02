@@ -28,7 +28,8 @@ pub const Token = struct {
     pub const Kind = enum {
         element_open,
         element_close,
-        element_close_self,
+        element_children_end,
+        element_self_end,
         element_attribute,
         element_attribute_value,
         comment_open,
@@ -141,7 +142,7 @@ pub fn next(self: *Scanner) !?Token {
                     errdefer self.state = .default;
 
                     return .{
-                        .kind = .element_close,
+                        .kind = .element_children_end,
                         .inner = tag_name,
                         .start_pos = start_pos,
                         .end_pos = self.global_cursor,
@@ -265,9 +266,10 @@ pub fn next(self: *Scanner) !?Token {
                         errdefer self.setCursor(initial_pos_2);
 
                         self.state = .default;
+                        errdefer self.state = initial_state;
 
                         return .{
-                            .kind = .element_close_self,
+                            .kind = .element_self_end,
                             .inner = &.{},
                             .start_pos = start_pos,
                             .end_pos = self.global_cursor,
@@ -281,7 +283,12 @@ pub fn next(self: *Scanner) !?Token {
                         self.state = .default;
                         errdefer self.state = initial_state;
 
-                        return try self.next();
+                        return .{
+                            .kind = .element_close,
+                            .inner = &.{},
+                            .start_pos = start_pos,
+                            .end_pos = self.global_cursor,
+                        };
                     }
                 },
                 .meta => {

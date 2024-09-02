@@ -103,10 +103,19 @@ pub const OwnedTree = struct {
 };
 
 pub const TreeBuilder = struct {
+    pub const State = union(enum) {
+        const ElemTag = struct {
+            open_token: Scanner.Token,
+            tag_name: []const u8,
+            attributes: std.ArrayList(Tree.Node.Elem.Attr),
+        };
+
+        default: void,
+        elem_tag: ElemTag,
+    };
+
     const TempTree = struct {
         maybe_open_token: ?Scanner.Token,
-        maybe_new_elem_tag_name: ?[]const u8 = null,
-        maybe_new_elem_attributes: ?std.ArrayList(Tree.Node.Elem.Attr) = null,
 
         children: std.ArrayList(Tree.Node),
     };
@@ -115,6 +124,7 @@ pub const TreeBuilder = struct {
     data_allocator: std.mem.Allocator,
     maybe_diagnostics: ?*Diagnostics,
 
+    state: State,
     stack: std.ArrayList(TempTree),
 
     pub fn init(
@@ -132,6 +142,7 @@ pub const TreeBuilder = struct {
             .temp_allocator = temp_allocator,
             .data_allocator = data_allocator,
             .maybe_diagnostics = maybe_diagnostics,
+            .state = .default,
             .stack = stack,
         };
     }
@@ -147,110 +158,118 @@ pub const TreeBuilder = struct {
 
     pub fn feedToken(self: *TreeBuilder, token: Scanner.Token) !void {
         std.debug.assert(self.stack.items.len > 0);
-        switch (token.kind) {
-            .element_open => {
-                if (token.inner.len == 0) {
-                    try self.reportDefectOrExit(.MissingTagName, &.{token});
-                }
+        switch (self.state) {
+            .default => {
+                switch (token.kind) {
+                    .element_open => {
+                        if (token.inner.len == 0) {
+                            try self.reportDefectOrExit(.MissingTagName, &.{token});
+                        }
 
-                var last = &self.stack.items[self.stack.items.len - 1];
-                last.maybe_new_elem_tag_name = try self.data_allocator.dupe(u8, token.inner);
-                last.maybe_new_elem_attributes = std.ArrayList(Tree.Node.Elem.Attr).init(self.data_allocator);
-                try self.stack.append(.{
-                    .maybe_open_token = token,
-                    .children = std.ArrayList(Tree.Node).init(self.data_allocator),
-                });
-            },
-            .element_close, .element_close_self => {
-                var last = &self.stack.items[self.stack.items.len - 1];
-                std.debug.assert(last.maybe_new_elem_tag_name == null);
-                std.debug.assert(last.maybe_new_elem_attributes == null);
-
-                if (self.stack.items.len == 1) {
-                    try self.reportDefectOrExit(.TagNeverOpened, &.{token});
-                    return;
-                }
-                const children = try last.children.toOwnedSlice();
-                _ = self.stack.pop();
-                last = &self.stack.items[self.stack.items.len - 1];
-                std.debug.assert(last.maybe_new_elem_tag_name != null);
-                std.debug.assert(last.maybe_new_elem_attributes != null);
-
-                if (token.kind == .element_close) {
-                    if (!std.mem.eql(u8, last.maybe_new_elem_tag_name.?, token.inner)) {
-                        try self.reportDefectOrExit(.TagNeverOpened, &.{token});
-                    }
-                }
-
-                try last.children.append(.{ .elem = .{
-                    .tag_name = last.maybe_new_elem_tag_name.?,
-                    .attributes = try last.maybe_new_elem_attributes.?.toOwnedSlice(),
-                    .tree = switch (token.kind) {
-                        .element_close => .{ .children = children },
-                        .element_close_self => null,
-                        else => unreachable,
+                        self.state = .{ .elem_tag = .{
+                            .open_token = token,
+                            .tag_name = try self.data_allocator.dupe(u8, token.inner),
+                            .attributes = std.ArrayList(Tree.Node.Elem.Attr).init(self.data_allocator),
+                        } };
                     },
-                } });
+                    .element_children_end => {
+                        var last = &self.stack.items[self.stack.items.len - 1];
 
-                last.maybe_new_elem_tag_name = null;
-                last.maybe_new_elem_attributes = null;
-            },
-            .element_attribute => {
-                std.debug.assert(self.stack.items.len > 1);
-                var last2 = &self.stack.items[self.stack.items.len - 2];
-                std.debug.assert(last2.maybe_new_elem_attributes != null);
-
-                try last2.maybe_new_elem_attributes.?.append(.{
-                    .name = try self.data_allocator.dupe(u8, token.inner),
-                    .value = null,
-                });
-            },
-            .element_attribute_value => {
-                std.debug.assert(self.stack.items.len > 1);
-                var last2 = &self.stack.items[self.stack.items.len - 2];
-                std.debug.assert(last2.maybe_new_elem_attributes != null);
-                const attributes = &last2.maybe_new_elem_attributes.?;
-                std.debug.assert(attributes.items.len > 0);
-
-                attributes.items[attributes.items.len - 1].value =
-                    try self.data_allocator.dupe(u8, token.inner);
-            },
-            .comment_open => {
-                var last = &self.stack.items[self.stack.items.len - 1];
-                try last.children.append(.{ .comment = .{
-                    .contents = &.{},
-                } });
-            },
-            .comment_close => {
-                var last = &self.stack.items[self.stack.items.len - 1];
-                std.debug.assert(last.children.items.len > 0);
-                std.debug.assert(last.children.items[last.children.items.len - 1] == .comment);
-                try last.children.append(.{ .text = .{
-                    .contents = &.{},
-                } });
-            },
-            .meta_attribute => {},
-            .meta_attribute_value => {},
-            .doctype => {},
-            .text_chunk => {
-                var last = &self.stack.items[self.stack.items.len - 1];
-                if (last.children.items.len > 0) {
-                    const last_node = &last.children.items[last.children.items.len - 1];
-                    switch (last_node.*) {
-                        inline .text, .comment => |*text_node| {
-                            defer self.data_allocator.free(text_node.contents);
-                            var concat = try self.data_allocator.alloc(u8, text_node.contents.len + token.inner.len);
-                            @memcpy(concat[0..text_node.contents.len], text_node.contents);
-                            @memcpy(concat[text_node.contents.len..], token.inner);
-                            text_node.contents = concat;
+                        if (self.stack.items.len == 1) {
+                            try self.reportDefectOrExit(.TagNeverOpened, &.{token});
                             return;
-                        },
-                        else => {},
-                    }
+                        }
+                        std.debug.assert(last.maybe_open_token != null);
+                        const open_token = last.maybe_open_token.?;
+                        const children = try last.children.toOwnedSlice();
+                        _ = self.stack.pop();
+
+                        last = &self.stack.items[self.stack.items.len - 1];
+
+                        if (!std.mem.eql(u8, open_token.inner, token.inner)) {
+                            try self.reportDefectOrExit(.TagNeverOpened, &.{token});
+                        }
+
+                        std.debug.assert(last.children.items.len > 0);
+
+                        const last_child = &last.children.items[last.children.items.len - 1];
+                        std.debug.assert(last_child.* == .elem);
+
+                        last_child.elem.tree = .{ .children = children };
+                    },
+                    .comment_open => {
+                        var last = &self.stack.items[self.stack.items.len - 1];
+                        try last.children.append(.{ .comment = .{
+                            .contents = &.{},
+                        } });
+                    },
+                    .comment_close => {
+                        var last = &self.stack.items[self.stack.items.len - 1];
+                        std.debug.assert(last.children.items.len > 0);
+                        std.debug.assert(last.children.items[last.children.items.len - 1] == .comment);
+                        try last.children.append(.{ .text = .{
+                            .contents = &.{},
+                        } });
+                    },
+                    .meta_attribute => {},
+                    .meta_attribute_value => {},
+                    .doctype => {},
+                    .text_chunk => {
+                        var last = &self.stack.items[self.stack.items.len - 1];
+                        if (last.children.items.len > 0) {
+                            const last_node = &last.children.items[last.children.items.len - 1];
+                            switch (last_node.*) {
+                                inline .text, .comment => |*text_node| {
+                                    defer self.data_allocator.free(text_node.contents);
+                                    var concat = try self.data_allocator.alloc(u8, text_node.contents.len + token.inner.len);
+                                    @memcpy(concat[0..text_node.contents.len], text_node.contents);
+                                    @memcpy(concat[text_node.contents.len..], token.inner);
+                                    text_node.contents = concat;
+                                    return;
+                                },
+                                else => {},
+                            }
+                        }
+                        try last.children.append(.{ .text = .{
+                            .contents = try self.data_allocator.dupe(u8, token.inner),
+                        } });
+                    },
+                    else => unreachable,
                 }
-                try last.children.append(.{ .text = .{
-                    .contents = try self.data_allocator.dupe(u8, token.inner),
-                } });
+            },
+            .elem_tag => |*tag_details| {
+                switch (token.kind) {
+                    .element_close, .element_self_end => {
+                        const last = &self.stack.items[self.stack.items.len - 1];
+                        try last.children.append(.{ .elem = .{
+                            .tag_name = tag_details.tag_name,
+                            .attributes = try tag_details.attributes.toOwnedSlice(),
+                            .tree = null,
+                        } });
+                        if (token.kind == .element_close) {
+                            try self.stack.append(.{
+                                .maybe_open_token = tag_details.open_token,
+                                .children = std.ArrayList(Tree.Node).init(self.data_allocator),
+                            });
+                        }
+                        self.state = .default;
+                    },
+                    .element_attribute => {
+                        std.debug.assert(self.stack.items.len > 1);
+
+                        try tag_details.attributes.append(.{
+                            .name = try self.data_allocator.dupe(u8, token.inner),
+                            .value = null,
+                        });
+                    },
+                    .element_attribute_value => {
+                        std.debug.assert(tag_details.attributes.items.len > 0);
+
+                        tag_details.attributes.items[tag_details.attributes.items.len - 1].value =
+                            try self.data_allocator.dupe(u8, token.inner);
+                    },
+                    else => unreachable,
+                }
             },
         }
     }
