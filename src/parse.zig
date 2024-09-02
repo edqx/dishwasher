@@ -166,9 +166,13 @@ pub const Builder = struct {
                             try self.reportDefectOrExit(.MissingTagName, &.{token});
                         }
 
+                        var copied_token = token;
+                        copied_token.inner = try self.data_allocator.dupe(u8, token.inner);
+                        errdefer self.data_allocator.free(copied_token.inner);
+
                         self.state = .{ .elem_tag = .{
-                            .open_token = token,
-                            .tag_name = try self.data_allocator.dupe(u8, token.inner),
+                            .open_token = copied_token,
+                            .tag_name = copied_token.inner,
                             .attributes = std.ArrayList(Tree.Node.Elem.Attr).init(self.data_allocator),
                         } };
                     },
@@ -187,6 +191,7 @@ pub const Builder = struct {
                         last = &self.stack.items[self.stack.items.len - 1];
 
                         if (!std.mem.eql(u8, open_token.inner, token.inner)) {
+                            std.log.info("{s} != {s}", .{ open_token.inner, token.inner });
                             try self.reportDefectOrExit(.TagNeverOpened, &.{token});
                         }
 
@@ -220,7 +225,8 @@ pub const Builder = struct {
                             const last_node = &last.children.items[last.children.items.len - 1];
                             switch (last_node.*) {
                                 inline .text, .comment => |*text_node| {
-                                    defer self.data_allocator.free(text_node.contents);
+                                    const previous_contents = text_node.contents;
+                                    defer self.data_allocator.free(previous_contents);
                                     var concat = try self.data_allocator.alloc(u8, text_node.contents.len + token.inner.len);
                                     @memcpy(concat[0..text_node.contents.len], text_node.contents);
                                     @memcpy(concat[text_node.contents.len..], token.inner);
