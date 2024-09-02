@@ -352,6 +352,7 @@ const Person = struct {
         },
         .apprentice = .{ .maybe, .{ .element, "apprentice", Person } },
         .children = .{ .elements, "child", Person },
+        .custom_data = .{ .maybe, .{ .element, "custom_data", Tree } },
     };
 
     name: []const u8,
@@ -369,6 +370,7 @@ const Person = struct {
     },
     apprentice: ?*Person,
     children: []Person,
+    custom_data: ?Tree,
 };
 
 pub const Document = struct {
@@ -388,6 +390,10 @@ test Populate {
         \\    <job start_date="2022" end_date="2023">dishwasher</job>
         \\    <job start_date="2023" end_date="-">door-to-door salesman</job>
         \\    <house>Nazereth</house>
+        \\    <custom_data>
+        \\        <temperature unit="celcius">36</temperature>
+        \\        <favourite_color>blue</favourite_color>
+        \\    </custom_data>
         \\</person>
         \\<person age="40">
         \\    Paul
@@ -422,4 +428,12 @@ test Populate {
     try std.testing.expectEqual(populate.people[1].jobs.len, 1);
     try std.testing.expect(populate.people[1].location == .work);
     try std.testing.expectEqualSlices(u8, populate.people[1].location.work, "Tarsus");
+
+    try std.testing.expect(populate.people[0].custom_data != null);
+    try std.testing.expectEqual(populate.people[0].custom_data.?.children.len, 5);
+    try std.testing.expect(populate.people[0].custom_data.?.children[1] == .elem);
+    try std.testing.expectEqual(populate.people[0].custom_data.?.children[1].elem.attributes.len, 1);
+    try std.testing.expectEqualSlices(u8, populate.people[0].custom_data.?.children[1].elem.attributes[0].name, "unit");
+    try std.testing.expect(populate.people[0].custom_data.?.children[1].elem.attributes[0].value != null);
+    try std.testing.expectEqualSlices(u8, populate.people[0].custom_data.?.children[1].elem.attributes[0].value.?, "celcius");
 }
