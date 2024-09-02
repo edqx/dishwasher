@@ -6,9 +6,12 @@ Note that this parser isn't strictly spec-compliant, however it will probably
 work with most well-formed xml documents.
 
 ## Features
+- [x] Pretty speedy
 - [x] Reader API-friendly
-- [x] Compile-time parsing
 - [x] Can populate structs
+- [x] Can populate dynamic values
+- [x] Compile-time parsing
+- [x] Diagnostics for malformed documents
 - [ ] Stringification (coming soon)
 
 ### Benchmarks
