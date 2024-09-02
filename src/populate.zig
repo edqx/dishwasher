@@ -36,19 +36,30 @@ pub fn PopulateShapeHeirarchy(comptime T: type, comptime shapes: anytype) type {
             tree: Tree,
             attributes: []const Tree.Node.Elem.Attr,
             val: *T,
-        ) !void {
+        ) (std.mem.Allocator.Error || ContentError)!void {
             switch (shape_type_info) {
                 .type => {
                     if (last_shape == Tree) {
                         if (T != Tree) {
-                            @compileError("Shape " ++ @typeName(Tree) ++ " cannot be applied to type " ++ @typeInfo(T) ++ ", must be the Tree type");
+                            @compileError("Shape " ++ @typeName(Tree) ++ " cannot be applied to type " ++ @typeName(T) ++ ", must be the Tree type");
                         }
                         val.* = tree;
                         return;
                     }
+                    if (dest_type_info == .pointer and dest_type_info.pointer.size == .One) {
+                        const child_type = dest_type_info.pointer.child;
+                        val.* = try allocator.create(child_type);
+                        errdefer allocator.destroy(val.*);
 
+                        val.*.* = try Populate(last_shape).initFromTreeImpl(
+                            allocator,
+                            tree,
+                            attributes,
+                        );
+                        return;
+                    }
                     if (T != last_shape) {
-                        @compileError("Shape " ++ shape_print ++ " cannot be applied to type " ++ @typeInfo(T));
+                        @compileError("Shape " ++ shape_print ++ " cannot be applied to type " ++ @typeName(T));
                     }
                     val.* = try Populate(last_shape).initFromTreeImpl(
                         allocator,
@@ -80,7 +91,7 @@ pub fn PopulateShapeHeirarchy(comptime T: type, comptime shapes: anytype) type {
                             } else if (T == bool) false;
                         } else if (struct_info.fields.len == 2 and last_shape[0] == .maybe) {
                             if (dest_type_info != .optional) {
-                                @compileError("Shape " ++ shape_print ++ " cannot be applied to type " ++ @typeInfo(T) + ", must be optional");
+                                @compileError("Shape " ++ shape_print ++ " cannot be applied to type " ++ @typeName(T) ++ ", must be optional");
                             }
 
                             const ChildType = dest_type_info.optional.child;
@@ -103,7 +114,7 @@ pub fn PopulateShapeHeirarchy(comptime T: type, comptime shapes: anytype) type {
                             };
                         } else if (struct_info.fields.len == 3 and last_shape[0] == .elements) {
                             if (dest_type_info != .pointer or dest_type_info.pointer.size != .Slice) {
-                                @compileError("Shape " ++ shape_print ++ " cannot be applied to type " ++ @typeInfo(T) + ", must be a slice type");
+                                @compileError("Shape " ++ shape_print ++ " cannot be applied to type " ++ @typeName(T) ++ ", must be a slice type");
                             }
 
                             const ChildType = dest_type_info.pointer.child;
@@ -189,44 +200,8 @@ pub fn PopulateShapeHeirarchy(comptime T: type, comptime shapes: anytype) type {
                                     break @unionInit(T, field.name, found);
                                 }
                             } else return ContentError.MissingOption;
-                        } else { // pattern
-                            // if (dest_type_info != .@"struct" or !dest_type_info.@"struct".is_tuple) {
-                            //     @compileError("Shape " ++ shape_print ++ " cannot be applied to type " ++ @typeName(T) ++ ", must be a tuple type");
-                            // }
-
-                            // const struct_fields = dest_type_info.@"struct".fields;
-                            // const shape_fields = struct_info.fields;
-
-                            // if (struct_fields.len != shape_fields.len) {
-                            //     @compileError("Pattern expected " ++ std.fmt.comptimePrint("{}", .{shape_fields.len}) ++ " fields in destination tuple, got " ++ std.fmt.comptimePrint("{}", .{struct_fields.len}));
-                            // }
-
-                            // if (tree.children.len < struct_fields.len) {
-                            //     return ContentError.MissingPatternMatch;
-                            // }
-
-                            // for (0..tree.children.len - struct_fields.len + 1) |i| {
-                            //     var out: T = undefined;
-                            //     var flag = true;
-                            //     inline for (0.., struct_fields, shape_fields) |j, struct_field, shape_field| {
-                            //         out[j] = PopulateShape(struct_field.type, shape_field).initFromTreeImpl(
-                            //             allocator,
-                            //             .{ .children = &.{tree.children[i + j]} },
-                            //             .{},
-                            //         ) catch |e| switch (e) {
-                            //             ContentError => {
-                            //                 flag = false;
-                            //                 break;
-                            //             },
-                            //             else => return e,
-                            //         };
-                            //     }
-                            //     if (flag) {
-                            //         val.* = out;
-                            //         break;
-                            //     }
-                            // }
-                            @compileError("Pattern not currently supported");
+                        } else {
+                            @compileError("Unknown shape: " ++ shape_print);
                         }
                     } else {
                         if (dest_type_info != .@"struct") {
@@ -325,7 +300,7 @@ pub fn PopulateShapeHeirarchy(comptime T: type, comptime shapes: anytype) type {
 
         pub fn initFromReader(allocator: std.mem.Allocator, reader: anytype) !OwnedDocument {
             var owned_tree = try parse.fromReader(allocator, reader);
-            const value = initFromTreeOwned(owned_tree.arena.allocator(), owned_tree.tree);
+            const value = try initFromTreeOwned(owned_tree.arena.allocator(), owned_tree.tree);
             return .{ .owned_tree = owned_tree, .value = value };
         }
 
@@ -372,8 +347,11 @@ const Person = struct {
         .location = .{
             .one_of,
             .{ .element, "house", .content },
-            .{ .element, "residence", .content },
+            .{ .element, "work", .content },
+            .none,
         },
+        .apprentice = .{ .maybe, .{ .element, "apprentice", Person } },
+        .children = .{ .elements, "child", Person },
     };
 
     name: []const u8,
@@ -386,8 +364,11 @@ const Person = struct {
     },
     location: union(enum) {
         house: []const u8,
-        residence: []const u8,
+        work: []const u8,
+        none: void,
     },
+    apprentice: ?*Person,
+    children: []Person,
 };
 
 pub const Document = struct {
@@ -400,6 +381,7 @@ pub const Document = struct {
 
 test Populate {
     const buf =
+        \\<!-- not biblically accurate... -->
         \\<person age="42">
         \\    Judas
         \\    <job start_date="2019" end_date="2022">software engineeer</job>
@@ -410,7 +392,17 @@ test Populate {
         \\<person age="40">
         \\    Paul
         \\    <job start_date="40" end_date="-">apostle</job>
-        \\    <residence>Tarsus</residence>
+        \\    <work>Tarsus</work>
+        \\    <child age="20">
+        \\        John
+        \\        <apprentice age="18">
+        \\            Jude
+        \\        </apprentice>
+        \\        <child age="2">
+        \\            Jamie
+        \\            <work>baby places</work>
+        \\        </child>
+        \\    </child>
         \\</person>
     ;
 
@@ -428,6 +420,6 @@ test Populate {
     try std.testing.expectEqualSlices(u8, populate.people[1].name, "Paul");
     try std.testing.expectEqualSlices(u8, populate.people[1].age, "40");
     try std.testing.expectEqual(populate.people[1].jobs.len, 1);
-    try std.testing.expect(populate.people[1].location == .residence);
-    try std.testing.expectEqualSlices(u8, populate.people[1].location.residence, "Tarsus");
+    try std.testing.expect(populate.people[1].location == .work);
+    try std.testing.expectEqualSlices(u8, populate.people[1].location.work, "Tarsus");
 }
