@@ -92,7 +92,13 @@ pub fn PopulateShapeHeirarchy(comptime T: type, comptime shapes: anytype) type {
                                 tree,
                                 attributes,
                             ) catch |e| switch (e) {
-                                ContentError => null,
+                                error.MissingAttribute,
+                                error.UnexpectedAttributeValue,
+                                error.MissingAttributeValue,
+                                error.MissingChild,
+                                error.MissingOption,
+                                error.MissingPatternMatch,
+                                => null,
                                 else => return e,
                             };
                         } else if (struct_info.fields.len == 3 and last_shape[0] == .elements) {
@@ -134,13 +140,15 @@ pub fn PopulateShapeHeirarchy(comptime T: type, comptime shapes: anytype) type {
                                             break elem_child;
                                         }
                                     },
+                                    else => {},
                                 }
                             } else return ContentError.MissingChild;
 
-                            val.* = PopulateShape(T, child_shape).initFromTreeImpl(
+                            try PopulateShape(T, child_shape).fromTreeImpl(
                                 allocator,
-                                elem.tree,
+                                elem.tree orelse .{ .children = &.{} },
                                 elem.attributes,
+                                val,
                             );
                         } else if (struct_info.fields.len > 2 and last_shape[0] == .one_of) {
                             if (dest_type_info != .@"union") {
@@ -148,27 +156,38 @@ pub fn PopulateShapeHeirarchy(comptime T: type, comptime shapes: anytype) type {
                             }
 
                             const union_fields = dest_type_info.@"union".fields;
-                            const child_shapes = last_shape[1..];
+                            const num_child_shapes = struct_info.fields.len - 1;
 
-                            if (union_fields.len != child_shapes.len) {
+                            if (union_fields.len != num_child_shapes) {
                                 @compileError("Shape " ++ shape_print ++ " cannot be applied to type " ++ @typeName(T) ++ ", mismatched number of branches");
                             }
 
-                            val.* = for (union_fields, child_shapes) |field, shape| {
-                                if (shape == .none) {
+                            val.* = inline for (union_fields, 0..num_child_shapes) |field, i| {
+                                const shape = last_shape[1 + i];
+                                const child_shape_type_info = @typeInfo(@TypeOf(shape));
+                                if (child_shape_type_info == .enum_literal and shape == .none) {
                                     if (field.type != void) {
                                         @compileError("Shape " ++ shape_print ++ " cannot be applied to type " ++ @typeName(T) ++ ", must be null");
                                     }
                                     break @unionInit(T, field.name, {});
                                 }
-                                break @unionInit(T, field.name, PopulateShape(field.type, shape).initFromTreeImpl(
+                                const maybe_found = PopulateShape(field.type, shape).initFromTreeImpl(
                                     allocator,
                                     tree,
                                     attributes,
                                 ) catch |e| switch (e) {
-                                    ContentError => continue,
+                                    error.MissingAttribute,
+                                    error.UnexpectedAttributeValue,
+                                    error.MissingAttributeValue,
+                                    error.MissingChild,
+                                    error.MissingOption,
+                                    error.MissingPatternMatch,
+                                    => null,
                                     else => return e,
-                                });
+                                };
+                                if (maybe_found) |found| {
+                                    break @unionInit(T, field.name, found);
+                                }
                             } else return ContentError.MissingOption;
                         } else { // pattern
                             // if (dest_type_info != .@"struct" or !dest_type_info.@"struct".is_tuple) {
@@ -350,6 +369,11 @@ const Person = struct {
             .title = .content_trimmed,
             .fired = .attribute_exists,
         } },
+        .location = .{
+            .one_of,
+            .{ .element, "house", .content },
+            .{ .element, "residence", .content },
+        },
     };
 
     name: []const u8,
@@ -359,6 +383,10 @@ const Person = struct {
         end_date: []const u8,
         title: []const u8,
         fired: bool,
+    },
+    location: union(enum) {
+        house: []const u8,
+        residence: []const u8,
     },
 };
 
@@ -374,9 +402,15 @@ test Populate {
     const buf =
         \\<person age="42">
         \\    Judas
-        \\    <job start_date="2019" end_date="505">software engineeer</job>
+        \\    <job start_date="2019" end_date="2022">software engineeer</job>
         \\    <job start_date="2022" end_date="2023">dishwasher</job>
         \\    <job start_date="2023" end_date="-">door-to-door salesman</job>
+        \\    <house>Nazereth</house>
+        \\</person>
+        \\<person age="40">
+        \\    Paul
+        \\    <job start_date="40" end_date="-">apostle</job>
+        \\    <residence>Tarsus</residence>
         \\</person>
     ;
 
@@ -385,8 +419,15 @@ test Populate {
 
     const populate: Document = try Populate(Document).initFromTreeOwned(owned_tree.arena.allocator(), owned_tree.tree);
 
-    try std.testing.expectEqual(populate.people.len, 1);
+    try std.testing.expectEqual(populate.people.len, 2);
     try std.testing.expectEqualSlices(u8, populate.people[0].name, "Judas");
     try std.testing.expectEqualSlices(u8, populate.people[0].age, "42");
     try std.testing.expectEqual(populate.people[0].jobs.len, 3);
+    try std.testing.expect(populate.people[0].location == .house);
+    try std.testing.expectEqualSlices(u8, populate.people[0].location.house, "Nazereth");
+    try std.testing.expectEqualSlices(u8, populate.people[1].name, "Paul");
+    try std.testing.expectEqualSlices(u8, populate.people[1].age, "40");
+    try std.testing.expectEqual(populate.people[1].jobs.len, 1);
+    try std.testing.expect(populate.people[1].location == .residence);
+    try std.testing.expectEqualSlices(u8, populate.people[1].location.residence, "Tarsus");
 }
