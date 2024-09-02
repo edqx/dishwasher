@@ -1,6 +1,8 @@
 const std = @import("std");
 const parse = @import("./parse.zig");
 
+const Tree = parse.Builder.Tree;
+
 pub const ContentError = error{
     MissingAttribute,
     UnexpectedAttributeValue,
@@ -21,7 +23,7 @@ pub fn PopulateShapeHeirarchy(comptime T: type, comptime shapes: anytype) type {
 
     return struct {
         pub const OwnedDocument = struct {
-            owned_tree: parse.OwnedTree,
+            owned_tree: Tree.Owned,
             value: T,
 
             pub fn deinit(self: OwnedDocument) void {
@@ -29,19 +31,22 @@ pub fn PopulateShapeHeirarchy(comptime T: type, comptime shapes: anytype) type {
             }
         };
 
-        pub fn populateFromTreeImpl(
+        pub fn fromTreeImpl(
             allocator: std.mem.Allocator,
-            tree: parse.Tree,
-            attributes: []parse.Tree.Node.Elem.Attr,
+            tree: Tree,
+            attributes: []const Tree.Node.Elem.Attr,
             val: *T,
         ) !void {
-            if (T == parse.Tree) {
-                val.* = tree;
-                return;
-            }
-
             switch (shape_type_info) {
                 .type => {
+                    if (last_shape == Tree) {
+                        if (T != Tree) {
+                            @compileError("Shape " ++ @typeName(Tree) ++ " cannot be applied to type " ++ @typeInfo(T) ++ ", must be the Tree type");
+                        }
+                        val.* = tree;
+                        return;
+                    }
+
                     if (T != last_shape) {
                         @compileError("Shape " ++ shape_print ++ " cannot be applied to type " ++ @typeInfo(T));
                     }
@@ -122,7 +127,7 @@ pub fn PopulateShapeHeirarchy(comptime T: type, comptime shapes: anytype) type {
                             const tag_name = last_shape[1];
                             const child_shape = last_shape[2];
 
-                            const elem: parse.Tree.Node.Elem = for (tree.children) |child| {
+                            const elem: Tree.Node.Elem = for (tree.children) |child| {
                                 switch (child) {
                                     .elem => |elem_child| {
                                         if (std.mem.eql(u8, elem_child.tag_name, tag_name)) {
@@ -269,7 +274,7 @@ pub fn PopulateShapeHeirarchy(comptime T: type, comptime shapes: anytype) type {
             }
         }
 
-        pub fn initFromTreeImpl(allocator: std.mem.Allocator, tree: parse.Tree, attributes: []parse.Tree.Node.Elem.Attr) !T {
+        pub fn initFromTreeImpl(allocator: std.mem.Allocator, tree: Tree, attributes: []const Tree.Node.Elem.Attr) !T {
             var val: T = undefined;
             switch (dest_type_info) {
                 .@"struct" => |structInfo| {
@@ -281,21 +286,22 @@ pub fn PopulateShapeHeirarchy(comptime T: type, comptime shapes: anytype) type {
                 },
                 else => {},
             }
-            try populateFromTreeImpl(allocator, tree, attributes, &val);
+            try fromTreeImpl(allocator, tree, attributes, &val);
             return val;
         }
 
-        pub fn populateFromTreeOwned(allocator: std.mem.Allocator, tree: parse.Tree, val: *T) !void {
-            try populateFromTreeImpl(allocator, tree, &.{}, val);
+        pub fn fromTreeOwned(allocator: std.mem.Allocator, tree: Tree, val: *T) !void {
+            try fromTreeImpl(allocator, tree, &.{}, val);
         }
 
-        pub fn initFromTreeOwned(allocator: std.mem.Allocator, tree: parse.Tree) !T {
+        pub fn initFromTreeOwned(allocator: std.mem.Allocator, tree: Tree) !T {
             return try initFromTreeImpl(allocator, tree, &.{});
         }
 
-        pub fn populateFromReader(allocator: std.mem.Allocator, reader: anytype, val: *T) !void {
+        pub fn fromReader(allocator: std.mem.Allocator, reader: anytype, val: *T) !std.heap.ArenaAllocator {
             var owned_tree = try parse.fromReader(allocator, reader);
-            try populateFromTreeOwned(owned_tree.arena.allocator(), owned_tree.tree, val);
+            try fromTreeOwned(owned_tree.arena.allocator(), owned_tree.tree, val);
+            return owned_tree.arena;
         }
 
         pub fn initFromReader(allocator: std.mem.Allocator, reader: anytype) !OwnedDocument {
@@ -304,9 +310,10 @@ pub fn PopulateShapeHeirarchy(comptime T: type, comptime shapes: anytype) type {
             return .{ .owned_tree = owned_tree, .value = value };
         }
 
-        pub fn populateFromSlice(allocator: std.mem.Allocator, slice: []const u8, val: *T) !void {
+        pub fn fromSlice(allocator: std.mem.Allocator, slice: []const u8, val: *T) !std.heap.ArenaAllocator {
             var owned_tree = try parse.fromSlice(allocator, slice);
-            try populateFromTreeOwned(owned_tree.arena.allocator(), owned_tree.tree, val);
+            try fromTreeOwned(owned_tree.arena.allocator(), owned_tree.tree, val);
+            return owned_tree.arena;
         }
 
         pub fn initFromSlice(allocator: std.mem.Allocator, slice: []const u8) !OwnedDocument {
@@ -322,8 +329,8 @@ pub fn PopulateShape(comptime T: type, comptime shape: anytype) type {
 }
 
 pub fn Populate(comptime T: type) type {
-    if (T == parse.Tree) {
-        return PopulateShape(T, parse.Tree);
+    if (T == Tree) {
+        return PopulateShape(T, Tree);
     }
 
     if (@hasDecl(T, "xml_shape")) {
@@ -373,11 +380,13 @@ test Populate {
         \\</person>
     ;
 
-    var owned_tree = try parse.parseFromSlice(std.testing.allocator, buf);
+    var owned_tree = try parse.fromSlice(std.testing.allocator, buf);
     defer owned_tree.deinit();
 
-    const populate = try Populate(parse.Tree).initFromTree(owned_tree.arena.allocator(), owned_tree.tree);
+    const populate: Document = try Populate(Document).initFromTreeOwned(owned_tree.arena.allocator(), owned_tree.tree);
 
-    // std.debug.print("document: {s}\n", .{populate.people[0].jobs[0].start_date});
-    std.debug.print("populate {s}", .{populate.children[0].elem.tag_name});
+    try std.testing.expectEqual(populate.people.len, 1);
+    try std.testing.expectEqualSlices(u8, populate.people[0].name, "Judas");
+    try std.testing.expectEqualSlices(u8, populate.people[0].age, "42");
+    try std.testing.expectEqual(populate.people[0].jobs.len, 3);
 }
