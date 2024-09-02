@@ -89,27 +89,37 @@ const Job = struct {
 }
 
 const Person = struct {
-  pub const xml_shape = .{
-    .first_name = .{ .attribute, "first-name" },
-    .last_name = .{ .attribute, "last-name" },
-    .jobs = .{ .elements, "job", .{
-      .title = .content_trimmed,
-      .start_date = .{ .attribute, "start-date" },
-      .end_date = .{ .attribute, "end-date" },
-    } },
-  };
+    pub const xml_shape = .{
+        .name = .content_trimmed,
+        .age = .{ .attribute, "age" },
+        .jobs = .{ .elements, "job", .{
+            .start_date = .{ .attribute, "start_date" },
+            .end_date = .{ .attribute, "end_date" },
+            .title = .content_trimmed,
+            .fired = .attribute_exists,
+        } },
+        .location = .{
+            .one_of,
+            .{ .element, "house", .content },
+            .{ .element, "residence", .content },
+        },
+    };
 
-  first_name: []const u8,
-  last_name: []const u8,
-  jobs: []Job,
+    name: []const u8,
+    age: []const u8,
+    jobs: []Job,
+    location: union(enum) {
+        house: []const u8,
+        residence: []const u8,
+    },
 };
 
-const Register = struct {
-  pub const xml_shape = .{
-    .people = .{ .elements, "person", Person },
-  };
+pub const Register = struct {
+    pub const xml_shape = .{
+        .people = .{ .elements, "person", Person },
+    };
 
-  people: []Person,
+    people: []Person,
 };
 
 const register = try diswasher.Populate(Register).initFromSlice(allocator, xml_text);
