@@ -2,7 +2,7 @@
 
 A fairly fast XML parser for [Zig](https://ziglang.org).
 
-Note that this parser isn't strictly XML parser, however it will probably
+Note that this parser isn't strictly spec-compliant, however it will probably
 work with most well-formed xml documents.
 
 ## Features
