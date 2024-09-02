@@ -20,6 +20,15 @@ pub fn PopulateShapeHeirarchy(comptime T: type, comptime shapes: anytype) type {
     const shape_print = std.fmt.comptimePrint("{}", .{last_shape});
 
     return struct {
+        pub const OwnedDocument = struct {
+            owned_tree: parse.OwnedTree,
+            value: T,
+
+            pub fn deinit(self: OwnedDocument) void {
+                self.owned_tree.deinit();
+            }
+        };
+
         pub fn populateFromTreeImpl(
             allocator: std.mem.Allocator,
             tree: parse.Tree,
@@ -276,12 +285,34 @@ pub fn PopulateShapeHeirarchy(comptime T: type, comptime shapes: anytype) type {
             return val;
         }
 
-        pub fn populateFromTree(allocator: std.mem.Allocator, tree: parse.Tree, val: *T) !void {
+        pub fn populateFromTreeOwned(allocator: std.mem.Allocator, tree: parse.Tree, val: *T) !void {
             try populateFromTreeImpl(allocator, tree, &.{}, val);
         }
 
-        pub fn initFromTree(allocator: std.mem.Allocator, tree: parse.Tree) !T {
+        pub fn initFromTreeOwned(allocator: std.mem.Allocator, tree: parse.Tree) !T {
             return try initFromTreeImpl(allocator, tree, &.{});
+        }
+
+        pub fn populateFromReader(allocator: std.mem.Allocator, reader: anytype, val: *T) !void {
+            var owned_tree = try parse.fromReader(allocator, reader);
+            try populateFromTreeOwned(owned_tree.arena.allocator(), owned_tree.tree, val);
+        }
+
+        pub fn initFromReader(allocator: std.mem.Allocator, reader: anytype) !OwnedDocument {
+            var owned_tree = try parse.fromReader(allocator, reader);
+            const value = initFromTreeOwned(owned_tree.arena.allocator(), owned_tree.tree);
+            return .{ .owned_tree = owned_tree, .value = value };
+        }
+
+        pub fn populateFromSlice(allocator: std.mem.Allocator, slice: []const u8, val: *T) !void {
+            var owned_tree = try parse.fromSlice(allocator, slice);
+            try populateFromTreeOwned(owned_tree.arena.allocator(), owned_tree.tree, val);
+        }
+
+        pub fn initFromSlice(allocator: std.mem.Allocator, slice: []const u8) !OwnedDocument {
+            var owned_tree = try parse.fromSlice(allocator, slice);
+            const value = initFromTreeOwned(owned_tree.arena.allocator(), owned_tree.tree);
+            return .{ .owned_tree = owned_tree, .value = value };
         }
     };
 }
