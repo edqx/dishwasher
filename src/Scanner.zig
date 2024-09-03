@@ -358,7 +358,7 @@ pub fn next(self: *Scanner) !?Token {
                     };
                 },
                 .attribute_value => {
-                    if (firstChar == '"') {
+                    if (firstChar == '"' or firstChar == '\'') {
                         const initial_pos_2 = self.advanceCursor(1);
                         errdefer self.setCursor(initial_pos_2);
 
@@ -366,7 +366,8 @@ pub fn next(self: *Scanner) !?Token {
                         while (true) : (attr_value_length += 1) {
                             const char = try self.peekChar(attr_value_length + 1) orelse return Error.UnexpectedEof;
                             switch (char) {
-                                '"' => break,
+                                '"' => if (firstChar == '"') break,
+                                '\'' => if (firstChar == '\'') break,
                                 else => {},
                             }
                         }
@@ -398,6 +399,11 @@ pub fn next(self: *Scanner) !?Token {
                         const char = try self.peekChar(attr_value_length + 1) orelse return Error.UnexpectedEof;
                         switch (char) {
                             ' ', '\n', '\r', '/', '>' => break,
+                            '?' => {
+                                if (self.state == .meta and try self.peekChar(attr_value_length + 2) == '>') {
+                                    break;
+                                }
+                            },
                             else => {},
                         }
                     }

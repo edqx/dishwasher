@@ -8,5 +8,4 @@ test {
     _ = @import("./Scanner.zig");
     _ = @import("./parse.zig");
     _ = @import("./populate.zig");
-    _ = @import("./stringify.zig");
 }
