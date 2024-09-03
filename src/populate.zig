@@ -12,7 +12,12 @@ pub const ContentError = error{
     MissingPatternMatch,
 };
 
-pub fn PopulateShape(comptime T: type, comptime shape: anytype) type {
+pub const Mode = enum {
+    compile_time,
+    run_time,
+};
+
+fn PopulateShape(comptime T: type, comptime shape: anytype) type {
     const dest_type_info: std.builtin.Type = @typeInfo(T);
     const ShapeType = @TypeOf(shape);
     const shape_type_info = @typeInfo(ShapeType);
@@ -108,7 +113,8 @@ pub fn PopulateShape(comptime T: type, comptime shape: anytype) type {
             }
         }
 
-        pub fn fromTreeImpl(
+        fn fromTreeImpl(
+            comptime mode: Mode,
             allocator: std.mem.Allocator,
             tree: Tree,
             attributes: []const Tree.Node.Elem.Attr,
@@ -125,20 +131,36 @@ pub fn PopulateShape(comptime T: type, comptime shape: anytype) type {
                     }
                     if (dest_type_info == .pointer and dest_type_info.pointer.size == .One) {
                         const child_type = dest_type_info.pointer.child;
-                        val.* = try allocator.create(child_type);
-                        errdefer allocator.destroy(val.*);
+                        switch (mode) {
+                            .compile_time => {
+                                val.* = &try Populate(shape).initFromTreeImpl(
+                                    mode,
+                                    allocator,
+                                    tree,
+                                    attributes,
+                                );
+                            },
+                            .run_time => {
+                                const out = try allocator.create(child_type);
+                                errdefer allocator.destroy(out);
 
-                        val.*.* = try Populate(shape).initFromTreeImpl(
-                            allocator,
-                            tree,
-                            attributes,
-                        );
+                                out.* = try Populate(shape).initFromTreeImpl(
+                                    mode,
+                                    allocator,
+                                    tree,
+                                    attributes,
+                                );
+
+                                val.* = out;
+                            },
+                        }
                         return;
                     }
                     if (T != shape) {
                         @compileError("Shape " ++ shape_print ++ " cannot be applied to type " ++ @typeName(T));
                     }
                     val.* = try Populate(shape).initFromTreeImpl(
+                        mode,
                         allocator,
                         tree,
                         attributes,
@@ -154,7 +176,10 @@ pub fn PopulateShape(comptime T: type, comptime shape: anytype) type {
                             val.* = for (attributes) |attribute| {
                                 if (std.mem.eql(u8, attribute.name, shape[1])) {
                                     const value = attribute.value orelse return ContentError.MissingAttributeValue;
-                                    break try allocator.dupe(u8, value);
+                                    break switch (mode) {
+                                        .compile_time => value,
+                                        .run_time => try allocator.dupe(u8, value),
+                                    };
                                 }
                             } else return ContentError.MissingAttribute;
                         } else if (struct_info.fields.len == 2 and shape[0] == .attribute_exists) {
@@ -176,6 +201,7 @@ pub fn PopulateShape(comptime T: type, comptime shape: anytype) type {
                             const child_shape = shape[1];
 
                             val.* = PopulateShape(ChildType, child_shape).initFromTreeImpl(
+                                mode,
                                 allocator,
                                 tree,
                                 attributes,
@@ -199,30 +225,55 @@ pub fn PopulateShape(comptime T: type, comptime shape: anytype) type {
                             const tag_name = shape[1];
                             const child_shape = shape[2];
 
-                            var result = std.ArrayList(ChildType).init(allocator);
-                            errdefer result.deinit();
-                            errdefer {
-                                for (result.items) |item| {
-                                    PopulateShape(ChildType, child_shape).deinit(allocator, item);
-                                }
-                            }
+                            switch (mode) {
+                                .compile_time => {
+                                    var result: []const ChildType = &.{};
 
-                            for (tree.children) |child| {
-                                switch (child) {
-                                    .elem => |elem_child| {
-                                        if (std.mem.eql(u8, elem_child.tag_name, tag_name)) {
-                                            try result.append(try PopulateShape(ChildType, child_shape).initFromTreeImpl(
-                                                allocator,
-                                                elem_child.tree orelse .{ .children = &.{} },
-                                                elem_child.attributes,
-                                            ));
+                                    for (tree.children) |child| {
+                                        switch (child) {
+                                            .elem => |elem_child| {
+                                                if (std.mem.eql(u8, elem_child.tag_name, tag_name)) {
+                                                    result = result ++ .{try PopulateShape(ChildType, child_shape).initFromTreeImpl(
+                                                        mode,
+                                                        allocator,
+                                                        elem_child.tree orelse .{ .children = &.{} },
+                                                        elem_child.attributes,
+                                                    )};
+                                                }
+                                            },
+                                            else => {},
                                         }
-                                    },
-                                    else => {},
-                                }
-                            }
+                                    }
+                                    val.* = result;
+                                },
+                                .run_time => {
+                                    var result = std.ArrayList(ChildType).init(allocator);
+                                    errdefer result.deinit();
+                                    errdefer {
+                                        for (result.items) |item| {
+                                            PopulateShape(ChildType, child_shape).deinit(allocator, item);
+                                        }
+                                    }
 
-                            val.* = try result.toOwnedSlice();
+                                    for (tree.children) |child| {
+                                        switch (child) {
+                                            .elem => |elem_child| {
+                                                if (std.mem.eql(u8, elem_child.tag_name, tag_name)) {
+                                                    try result.append(try PopulateShape(ChildType, child_shape).initFromTreeImpl(
+                                                        mode,
+                                                        allocator,
+                                                        elem_child.tree orelse .{ .children = &.{} },
+                                                        elem_child.attributes,
+                                                    ));
+                                                }
+                                            },
+                                            else => {},
+                                        }
+                                    }
+
+                                    val.* = try result.toOwnedSlice();
+                                },
+                            }
                         } else if (struct_info.fields.len == 3 and shape[0] == .element) {
                             const tag_name = shape[1];
                             const child_shape = shape[2];
@@ -239,6 +290,7 @@ pub fn PopulateShape(comptime T: type, comptime shape: anytype) type {
                             } else return ContentError.MissingChild;
 
                             try PopulateShape(T, child_shape).fromTreeImpl(
+                                mode,
                                 allocator,
                                 elem.tree orelse .{ .children = &.{} },
                                 elem.attributes,
@@ -265,7 +317,8 @@ pub fn PopulateShape(comptime T: type, comptime shape: anytype) type {
                                     }
                                     break @unionInit(T, field.name, {});
                                 }
-                                const maybe_found = PopulateShape(field.type, child_shape).initFromTreeImpl(
+                                const maybe_found: ?field.type = PopulateShape(field.type, child_shape).initFromTreeImpl(
+                                    mode,
                                     allocator,
                                     tree,
                                     attributes,
@@ -296,25 +349,30 @@ pub fn PopulateShape(comptime T: type, comptime shape: anytype) type {
 
                         var i: usize = 0;
                         errdefer {
-                            // we have to reverse all of the fields by deinitialising
-                            // them. the problem is that the number of fields that were
-                            // initialised is runtime-known, whereas the fields themselves
-                            // need to be comptime known. so this code is weird.
-                            comptime var j: usize = shape_fields.len;
-                            inline while (j > 0) {
-                                j -= 1;
-                                if (j < i) {
-                                    const shape_field = shape_fields[j];
-                                    const base_field = comptime for (struct_fields) |field| {
-                                        if (std.mem.eql(u8, field.name, shape_field.name)) {
-                                            break field;
-                                        }
-                                    } else @compileError("Missing field '" ++ shape_field.name ++ "' on base type " ++ @typeName(T));
+                            switch (mode) {
+                                .compile_time => {},
+                                .run_time => {
+                                    // we have to reverse all of the fields by deinitialising
+                                    // them. the problem is that the number of fields that were
+                                    // initialised is runtime-known, whereas the fields themselves
+                                    // need to be comptime known. so this code is weird.
+                                    comptime var j: usize = shape_fields.len;
+                                    inline while (j > 0) {
+                                        j -= 1;
+                                        if (j < i) {
+                                            const shape_field = shape_fields[j];
+                                            const base_field = comptime for (struct_fields) |field| {
+                                                if (std.mem.eql(u8, field.name, shape_field.name)) {
+                                                    break field;
+                                                }
+                                            } else @compileError("Missing field '" ++ shape_field.name ++ "' on base type " ++ @typeName(T));
 
-                                    const shape_field_val = @field(shape, shape_field.name);
-                                    PopulateShape(base_field.type, shape_field_val)
-                                        .deinit(allocator, @field(val, base_field.name));
-                                }
+                                            const shape_field_val = @field(shape, shape_field.name);
+                                            PopulateShape(base_field.type, shape_field_val)
+                                                .deinit(allocator, @field(val, base_field.name));
+                                        }
+                                    }
+                                },
                             }
                         }
 
@@ -329,7 +387,7 @@ pub fn PopulateShape(comptime T: type, comptime shape: anytype) type {
 
                             const shape_field_val = @field(shape, shape_field.name);
                             @field(val.*, base_field.name) = try PopulateShape(base_field.type, shape_field_val)
-                                .initFromTreeImpl(allocator, tree, attributes);
+                                .initFromTreeImpl(mode, allocator, tree, attributes);
                         }
                     }
                 },
@@ -339,45 +397,34 @@ pub fn PopulateShape(comptime T: type, comptime shape: anytype) type {
                             @compileError("Shape " ++ shape_print ++ " cannot be applied to type " ++ @typeName(T) ++ ", must be a string type");
                         }
 
-                        var content_length: usize = 0;
-                        for (tree.children) |child| {
-                            switch (child) {
-                                .text => |text_child| content_length += text_child.contents.len,
-                                else => {},
-                            }
+                        switch (mode) {
+                            .compile_time => {
+                                val.* = switch (shape) {
+                                    .content => tree.concatTextComptime(),
+                                    .content_trimmed => tree.concatTextTrimmedComptime(),
+                                    else => unreachable,
+                                };
+                            },
+                            .run_time => {
+                                val.* = switch (shape) {
+                                    .content => try tree.concatTextAlloc(allocator),
+                                    .content_trimmed => try tree.concatTextTrimmedAlloc(allocator),
+                                    else => unreachable,
+                                };
+                            },
                         }
-                        const combined = try allocator.alloc(u8, content_length);
-                        errdefer allocator.free(combined);
-
-                        var cursor: usize = 0;
-                        for (tree.children) |child| {
-                            switch (child) {
-                                .text => |text_child| {
-                                    @memcpy(combined[cursor .. cursor + text_child.contents.len], text_child.contents);
-                                    cursor += text_child.contents.len;
-                                },
-                                else => {},
-                            }
-                        }
-
-                        if (shape == .content_trimmed) {
-                            defer allocator.free(combined);
-
-                            const trimmed = std.mem.trim(u8, combined, &std.ascii.whitespace);
-                            errdefer allocator.free(trimmed);
-
-                            val.* = try allocator.dupe(u8, trimmed);
-                        } else {
-                            val.* = combined;
-                        }
-                        return;
                     }
                 },
                 else => @compileError("Unknown shape type " ++ shape_print),
             }
         }
 
-        pub fn initFromTreeImpl(allocator: std.mem.Allocator, tree: Tree, attributes: []const Tree.Node.Elem.Attr) !T {
+        fn initFromTreeImpl(
+            comptime mode: Mode,
+            allocator: std.mem.Allocator,
+            tree: Tree,
+            attributes: []const Tree.Node.Elem.Attr,
+        ) !T {
             var val: T = undefined;
             switch (dest_type_info) {
                 .@"struct" => |structInfo| {
@@ -389,16 +436,24 @@ pub fn PopulateShape(comptime T: type, comptime shape: anytype) type {
                 },
                 else => {},
             }
-            try fromTreeImpl(allocator, tree, attributes, &val);
+            try fromTreeImpl(mode, allocator, tree, attributes, &val);
             return val;
         }
 
+        pub fn fromTreeComptime(comptime tree: Tree, val: *T) !void {
+            try fromTreeImpl(.compile_time, undefined, tree, &.{}, val);
+        }
+
+        pub fn initFromTreeComptime(comptime tree: Tree) T {
+            return comptime try initFromTreeImpl(.compile_time, undefined, tree, &.{});
+        }
+
         pub fn fromTreeOwned(allocator: std.mem.Allocator, tree: Tree, val: *T) !void {
-            try fromTreeImpl(allocator, tree, &.{}, val);
+            try fromTreeImpl(.run_time, allocator, tree, &.{}, val);
         }
 
         pub fn initFromTreeOwned(allocator: std.mem.Allocator, tree: Tree) !T {
-            return try initFromTreeImpl(allocator, tree, &.{});
+            return try initFromTreeImpl(.run_time, allocator, tree, &.{});
         }
 
         pub fn fromReader(allocator: std.mem.Allocator, reader: anytype, val: *T) !std.heap.ArenaAllocator {
@@ -427,16 +482,30 @@ pub fn PopulateShape(comptime T: type, comptime shape: anytype) type {
     };
 }
 
-pub fn Populate(comptime T: type) type {
+pub fn ShapeTypeFromType(comptime T: type) type {
     if (T == Tree) {
-        return PopulateShape(T, Tree);
+        return type;
     }
 
     if (@hasDecl(T, "xml_shape")) {
-        return PopulateShape(T, T.xml_shape);
+        return @TypeOf(T.xml_shape);
     }
 
-    @compileError("Type " ++ @typeName(T) ++ " needs an 'xml_shape' declaration to automatically deserialise from XML");
+    @compileError("Type " ++ @typeName(T) ++ " needs an 'xml_shape' declaration to deserialise from XML");
+}
+
+pub fn shapeFromType(comptime T: type) ShapeTypeFromType(T) {
+    if (T == Tree) {
+        return Tree;
+    }
+
+    if (@hasDecl(T, "xml_shape")) {
+        return T.xml_shape;
+    }
+}
+
+pub fn Populate(comptime T: type) type {
+    return PopulateShape(T, shapeFromType(T));
 }
 
 const Person = struct {
@@ -462,7 +531,7 @@ const Person = struct {
 
     name: []const u8,
     age: []const u8,
-    jobs: []struct {
+    jobs: []const struct {
         start_date: []const u8,
         end_date: []const u8,
         title: []const u8,
@@ -473,73 +542,85 @@ const Person = struct {
         work: []const u8,
         none: void,
     },
-    apprentice: ?*Person,
-    children: []Person,
+    apprentice: ?*const Person,
+    children: []const Person,
     custom_data: ?Tree,
 };
 
-pub const Document = struct {
+const Document = struct {
     pub const xml_shape = .{
         .people = .{ .elements, "person", Person },
     };
 
-    people: []Person,
+    people: []const Person,
 };
 
-test Populate {
-    const buf =
-        \\<!-- not biblically accurate... -->
-        \\<person age="42">
-        \\    Judas
-        \\    <job start_date="2019" end_date="2022">software engineeer</job>
-        \\    <job start_date="2022" end_date="2023">dishwasher</job>
-        \\    <job start_date="2023" end_date="-">door-to-door salesman</job>
-        \\    <house>Nazereth</house>
-        \\    <custom_data>
-        \\        <temperature unit="celcius">36</temperature>
-        \\        <favourite_color>blue</favourite_color>
-        \\    </custom_data>
-        \\</person>
-        \\<person age="40">
-        \\    Paul
-        \\    <job start_date="40" end_date="-">apostle</job>
-        \\    <work>Tarsus</work>
-        \\    <child age="20">
-        \\        John
-        \\        <apprentice age="18">
-        \\            Jude
-        \\        </apprentice>
-        \\        <child age="2">
-        \\            Jamie
-        \\            <work>baby places</work>
-        \\        </child>
-        \\    </child>
-        \\</person>
-    ;
+const test_buf =
+    \\<!-- not biblically accurate... -->
+    \\<person age="42">
+    \\    Judas
+    \\    <job start_date="2019" end_date="2022">software engineeer</job>
+    \\    <job start_date="2022" end_date="2023">dishwasher</job>
+    \\    <job start_date="2023" end_date="-">door-to-door salesman</job>
+    \\    <house>Nazereth</house>
+    \\    <custom_data>
+    \\        <temperature unit="celcius">36</temperature>
+    \\        <favourite_color>blue</favourite_color>
+    \\    </custom_data>
+    \\</person>
+    \\<person age="40">
+    \\    Paul
+    \\    <job start_date="40" end_date="-">apostle</job>
+    \\    <work>Tarsus</work>
+    \\    <child age="20">
+    \\        John
+    \\        <apprentice age="18">
+    \\            Jude
+    \\        </apprentice>
+    \\        <child age="2">
+    \\            Jamie
+    \\            <work>baby places</work>
+    \\        </child>
+    \\    </child>
+    \\</person>
+;
 
-    var owned_tree = try parse.fromSlice(std.testing.allocator, buf);
+pub fn expectTestBufDocumentValid(document: Document) !void {
+    try std.testing.expectEqual(document.people.len, 2);
+    try std.testing.expectEqualSlices(u8, document.people[0].name, "Judas");
+    try std.testing.expectEqualSlices(u8, document.people[0].age, "42");
+    try std.testing.expectEqual(document.people[0].jobs.len, 3);
+    try std.testing.expect(document.people[0].location == .house);
+    try std.testing.expectEqualSlices(u8, document.people[0].location.house, "Nazereth");
+    try std.testing.expectEqualSlices(u8, document.people[1].name, "Paul");
+    try std.testing.expectEqualSlices(u8, document.people[1].age, "40");
+    try std.testing.expectEqual(document.people[1].jobs.len, 1);
+    try std.testing.expect(document.people[1].location == .work);
+    try std.testing.expectEqualSlices(u8, document.people[1].location.work, "Tarsus");
+
+    try std.testing.expect(document.people[0].custom_data != null);
+    try std.testing.expectEqual(document.people[0].custom_data.?.children.len, 5);
+    try std.testing.expect(document.people[0].custom_data.?.children[1] == .elem);
+    try std.testing.expectEqual(document.people[0].custom_data.?.children[1].elem.attributes.len, 1);
+    try std.testing.expectEqualSlices(u8, document.people[0].custom_data.?.children[1].elem.attributes[0].name, "unit");
+    try std.testing.expect(document.people[0].custom_data.?.children[1].elem.attributes[0].value != null);
+    try std.testing.expectEqualSlices(u8, document.people[0].custom_data.?.children[1].elem.attributes[0].value.?, "celcius");
+}
+
+test Populate {
+    var owned_tree = try parse.fromSlice(std.testing.allocator, test_buf);
     defer owned_tree.deinit();
 
-    const populate: Document = try Populate(Document).initFromTreeOwned(std.testing.allocator, owned_tree.tree);
-    defer Populate(Document).deinit(std.testing.allocator, populate);
+    const document: Document = try Populate(Document).initFromTreeOwned(std.testing.allocator, owned_tree.tree);
+    defer Populate(Document).deinit(std.testing.allocator, document);
 
-    try std.testing.expectEqual(populate.people.len, 2);
-    try std.testing.expectEqualSlices(u8, populate.people[0].name, "Judas");
-    try std.testing.expectEqualSlices(u8, populate.people[0].age, "42");
-    try std.testing.expectEqual(populate.people[0].jobs.len, 3);
-    try std.testing.expect(populate.people[0].location == .house);
-    try std.testing.expectEqualSlices(u8, populate.people[0].location.house, "Nazereth");
-    try std.testing.expectEqualSlices(u8, populate.people[1].name, "Paul");
-    try std.testing.expectEqualSlices(u8, populate.people[1].age, "40");
-    try std.testing.expectEqual(populate.people[1].jobs.len, 1);
-    try std.testing.expect(populate.people[1].location == .work);
-    try std.testing.expectEqualSlices(u8, populate.people[1].location.work, "Tarsus");
+    try expectTestBufDocumentValid(document);
+}
 
-    try std.testing.expect(populate.people[0].custom_data != null);
-    try std.testing.expectEqual(populate.people[0].custom_data.?.children.len, 5);
-    try std.testing.expect(populate.people[0].custom_data.?.children[1] == .elem);
-    try std.testing.expectEqual(populate.people[0].custom_data.?.children[1].elem.attributes.len, 1);
-    try std.testing.expectEqualSlices(u8, populate.people[0].custom_data.?.children[1].elem.attributes[0].name, "unit");
-    try std.testing.expect(populate.people[0].custom_data.?.children[1].elem.attributes[0].value != null);
-    try std.testing.expectEqualSlices(u8, populate.people[0].custom_data.?.children[1].elem.attributes[0].value.?, "celcius");
+test "comptime populate" {
+    @setEvalBranchQuota(4096);
+    const tree = comptime parse.fromSliceComptime(test_buf);
+    const document: Document = comptime Populate(Document).initFromTreeComptime(tree);
+
+    try expectTestBufDocumentValid(document);
 }

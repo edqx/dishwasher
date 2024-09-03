@@ -230,6 +230,24 @@ pub const Tree = struct {
         const trimmed = std.mem.trim(u8, combined, &std.ascii.whitespace);
         return try allocator.dupe(u8, trimmed);
     }
+
+    pub fn concatTextComptime(self: Tree) []const u8 {
+        var out: []const u8 = &.{};
+        for (self.children) |child| {
+            switch (child) {
+                .text => |text_child| {
+                    out = out ++ text_child.contents;
+                },
+                else => {},
+            }
+        }
+        return out;
+    }
+
+    pub fn concatTextTrimmedComptime(self: Tree) []const u8 {
+        const combined = self.concatTextComptime();
+        return std.mem.trim(u8, combined, &std.ascii.whitespace);
+    }
 };
 
 pub const Builder = struct {
@@ -559,6 +577,7 @@ pub const ComptimeBuilder = struct {
                                                 switch (tag) {
                                                     .text => .{ .text = .{ .contents = contents } },
                                                     .comment => .{ .comment = .{ .contents = contents } },
+                                                    else => unreachable,
                                                 },
                                             },
                                         }},
@@ -734,7 +753,7 @@ pub fn fromReader(allocator: std.mem.Allocator, reader: anytype) !Tree.Owned {
     return fromReaderImpl(allocator, reader, null);
 }
 
-pub fn comptimeFromSlice(comptime slice: []const u8) Tree {
+pub fn fromSliceComptime(comptime slice: []const u8) Tree {
     return comptime blk: {
         var scanner = Scanner.fromSlice(slice);
         var builder = ComptimeBuilder{};
@@ -747,59 +766,8 @@ pub fn comptimeFromSlice(comptime slice: []const u8) Tree {
     };
 }
 
-test fromReader {
-    const buf = "<div betrayed-by=\"judas\">jesus <p>christ</p> lord <amen/></div>";
-    var fba = std.io.fixedBufferStream(buf);
-
-    const parsed = try fromReader(std.testing.allocator, fba.reader());
-    defer parsed.deinit();
-
-    try std.testing.expectEqual(parsed.tree.children.len, 1);
-    try std.testing.expect(parsed.tree.children[0] == .elem);
-    try std.testing.expectEqualSlices(u8, parsed.tree.children[0].elem.tag_name, "div");
-    try std.testing.expectEqual(parsed.tree.children[0].elem.attributes.len, 1);
-    try std.testing.expectEqualSlices(u8, parsed.tree.children[0].elem.attributes[0].name, "betrayed-by");
-    try std.testing.expectEqualSlices(u8, parsed.tree.children[0].elem.attributes[0].value.?, "judas");
-    try std.testing.expect(parsed.tree.children[0].elem.tree != null);
-    try std.testing.expectEqual(parsed.tree.children[0].elem.tree.?.children.len, 4);
-
-    try std.testing.expect(parsed.tree.children[0].elem.tree.?.children[0] == .text);
-    try std.testing.expectEqualSlices(u8, parsed.tree.children[0].elem.tree.?.children[0].text.contents, "jesus ");
-
-    try std.testing.expect(parsed.tree.children[0].elem.tree.?.children[1] == .elem);
-    try std.testing.expectEqualSlices(u8, parsed.tree.children[0].elem.tree.?.children[1].elem.tag_name, "p");
-    try std.testing.expect(parsed.tree.children[0].elem.tree.?.children[0] == .text);
-    try std.testing.expectEqual(parsed.tree.children[0].elem.tree.?.children[1].elem.attributes.len, 0);
-    try std.testing.expect(parsed.tree.children[0].elem.tree.?.children[1].elem.tree != null);
-    try std.testing.expectEqual(parsed.tree.children[0].elem.tree.?.children[1].elem.tree.?.children.len, 1);
-    try std.testing.expect(parsed.tree.children[0].elem.tree.?.children[1].elem.tree.?.children[0] == .text);
-    try std.testing.expectEqualSlices(u8, parsed.tree.children[0].elem.tree.?.children[1].elem.tree.?.children[0].text.contents, "christ");
-
-    try std.testing.expect(parsed.tree.children[0].elem.tree.?.children[2] == .text);
-    try std.testing.expectEqualSlices(u8, parsed.tree.children[0].elem.tree.?.children[2].text.contents, " lord ");
-
-    try std.testing.expect(parsed.tree.children[0].elem.tree.?.children[3] == .elem);
-    try std.testing.expectEqualSlices(u8, parsed.tree.children[0].elem.tree.?.children[3].elem.tag_name, "amen");
-    try std.testing.expectEqual(parsed.tree.children[0].elem.tree.?.children[3].elem.attributes.len, 0);
-    try std.testing.expect(parsed.tree.children[0].elem.tree.?.children[3].elem.tree == null);
-}
-
-test fromReaderDiagnostics {
-    const buf = "<div><p></p>";
-    var fba = std.io.fixedBufferStream(buf);
-
-    var diagnostics = Diagnostics.init(std.testing.allocator);
-    defer diagnostics.deinit();
-
-    const parsed = try fromReaderDiagnostics(std.testing.allocator, fba.reader(), &diagnostics);
-    defer parsed.deinit();
-
-    try std.testing.expectEqual(diagnostics.defects.items.len, 1);
-}
-
-test comptimeFromSlice {
-    const tree = comptimeFromSlice("<div betrayed-by=\"judas\">jesus <p>christ</p> lord <amen/></div>");
-
+const test_buf = "<div betrayed-by=\"judas\">jesus <p>christ</p> lord <amen/></div>";
+pub fn expectTestTreeValid(tree: Tree) !void {
     try std.testing.expectEqual(tree.children.len, 1);
     try std.testing.expect(tree.children[0] == .elem);
     try std.testing.expectEqualSlices(u8, tree.children[0].elem.tag_name, "div");
@@ -828,6 +796,33 @@ test comptimeFromSlice {
     try std.testing.expectEqualSlices(u8, tree.children[0].elem.tree.?.children[3].elem.tag_name, "amen");
     try std.testing.expectEqual(tree.children[0].elem.tree.?.children[3].elem.attributes.len, 0);
     try std.testing.expect(tree.children[0].elem.tree.?.children[3].elem.tree == null);
+}
+
+test fromReader {
+    var fba = std.io.fixedBufferStream(test_buf);
+
+    const parsed = try fromReader(std.testing.allocator, fba.reader());
+    defer parsed.deinit();
+
+    try expectTestTreeValid(parsed.tree);
+}
+
+test fromReaderDiagnostics {
+    const buf = "<div><p></p>";
+    var fba = std.io.fixedBufferStream(buf);
+
+    var diagnostics = Diagnostics.init(std.testing.allocator);
+    defer diagnostics.deinit();
+
+    const parsed = try fromReaderDiagnostics(std.testing.allocator, fba.reader(), &diagnostics);
+    defer parsed.deinit();
+
+    try std.testing.expectEqual(diagnostics.defects.items.len, 1);
+}
+
+test fromSliceComptime {
+    const tree = fromSliceComptime(test_buf);
+    try expectTestTreeValid(tree);
 }
 
 test Tree {

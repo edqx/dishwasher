@@ -256,7 +256,7 @@ for some inline code generation. While comptime doesn't have allocators,
 there's a custom API for this:
 
 ```ts
-const tree = dishwasher.parse.comptimeFromSlice(xml_text);
+const tree = dishwasher.parse.fromSliceComptime(xml_text);
 ```
 
 Check out the [Tree API](#tree-api) to know what to do with the returned value.
