@@ -461,8 +461,6 @@ pub const ComptimeBuilder = struct {
         children: []const Tree.Node,
     };
 
-    maybe_diagnostics: ?*Diagnostics = null,
-
     state: State = .default,
     stack: []const TempTree = &.{.{
         .maybe_open_token = null,
@@ -478,7 +476,7 @@ pub const ComptimeBuilder = struct {
         try diagnostics.reportDefect(defectKind, tokens);
     }
 
-    pub fn getNextState(comptime self: ComptimeBuilder, token: Scanner.Token) !ComptimeBuilder {
+    pub fn feedToken(self: *ComptimeBuilder, token: Scanner.Token) !void {
         std.debug.assert(self.stack.len > 0);
         switch (self.state) {
             .default => {
@@ -488,21 +486,18 @@ pub const ComptimeBuilder = struct {
                             try self.reportDefectOrExit(.MissingTagName, &.{token});
                         }
 
-                        return .{
-                            .state = .{ .elem_tag = .{
-                                .open_token = token,
-                                .tag_name = token.inner,
-                                .attributes = &.{},
-                            } },
-                            .stack = self.stack,
-                        };
+                        self.state = .{ .elem_tag = .{
+                            .open_token = token,
+                            .tag_name = token.inner,
+                            .attributes = &.{},
+                        } };
                     },
                     .element_children_end => {
                         const last = self.stack[self.stack.len - 1];
 
                         if (self.stack.len == 1) {
                             try self.reportDefectOrExit(.TagNeverOpened, &.{token});
-                            return self;
+                            return;
                         }
                         std.debug.assert(last.maybe_open_token != null);
                         const open_token = last.maybe_open_token.?;
@@ -519,45 +514,36 @@ pub const ComptimeBuilder = struct {
                         const last_child = second_last.children[second_last.children.len - 1];
                         std.debug.assert(last_child == .elem);
 
-                        return .{
-                            .state = self.state,
-                            .stack = self.stack[0 .. self.stack.len - 2] ++ .{.{
-                                .maybe_open_token = second_last.maybe_open_token,
-                                .children = second_last.children[0 .. second_last.children.len - 1] ++ .{
-                                    .{ .elem = .{
-                                        .tag_name = last_child.elem.tag_name,
-                                        .attributes = last_child.elem.attributes,
-                                        .tree = .{ .children = children },
-                                    } },
-                                },
-                            }},
-                        };
+                        self.stack = self.stack[0 .. self.stack.len - 2] ++ .{.{
+                            .maybe_open_token = second_last.maybe_open_token,
+                            .children = second_last.children[0 .. second_last.children.len - 1] ++ .{
+                                .{ .elem = .{
+                                    .tag_name = last_child.elem.tag_name,
+                                    .attributes = last_child.elem.attributes,
+                                    .tree = .{ .children = children },
+                                } },
+                            },
+                        }};
                     },
                     .comment_open => {
                         const last = self.stack[self.stack.len - 1];
-                        return .{
-                            .state = self.state,
-                            .stack = self.stack[0 .. self.stack.len - 1] ++ .{.{
-                                .maybe_open_token = last.maybe_open_token,
-                                .children = last.children[0..last.children.len] ++ .{.{
-                                    .comment = .{ .contents = token.inner },
-                                }},
+                        self.stack = self.stack[0 .. self.stack.len - 1] ++ .{.{
+                            .maybe_open_token = last.maybe_open_token,
+                            .children = last.children[0..last.children.len] ++ .{.{
+                                .comment = .{ .contents = token.inner },
                             }},
-                        };
+                        }};
                     },
                     .comment_close => {
                         const last = self.stack[self.stack.len - 1];
                         std.debug.assert(last.children.len > 0);
                         std.debug.assert(last.children[last.children.len - 1] == .comment);
-                        return .{
-                            .state = self.state,
-                            .stack = self.stack[0 .. self.stack.len - 1] ++ .{.{
-                                .maybe_open_token = last.maybe_open_token,
-                                .children = last.children[0..last.children.len] ++ .{.{
-                                    .text = .{ .contents = token.inner },
-                                }},
+                        self.stack = self.stack[0 .. self.stack.len - 1] ++ .{.{
+                            .maybe_open_token = last.maybe_open_token,
+                            .children = last.children[0..last.children.len] ++ .{.{
+                                .text = .{ .contents = token.inner },
                             }},
-                        };
+                        }};
                     },
                     .meta_attribute => {},
                     .meta_attribute_value => {},
@@ -569,34 +555,28 @@ pub const ComptimeBuilder = struct {
                             switch (last_node) {
                                 inline .text, .comment => |text_node, tag| {
                                     const contents = text_node.contents ++ token.inner;
-                                    return .{
-                                        .state = self.state,
-                                        .stack = self.stack[0 .. self.stack.len - 1] ++ .{.{
-                                            .maybe_open_token = last.maybe_open_token,
-                                            .children = last.children[0 .. last.children.len - 1] ++ .{
-                                                switch (tag) {
-                                                    .text => .{ .text = .{ .contents = contents } },
-                                                    .comment => .{ .comment = .{ .contents = contents } },
-                                                    else => unreachable,
-                                                },
+                                    self.stack = self.stack[0 .. self.stack.len - 1] ++ .{.{
+                                        .maybe_open_token = last.maybe_open_token,
+                                        .children = last.children[0 .. last.children.len - 1] ++ .{
+                                            switch (tag) {
+                                                .text => .{ .text = .{ .contents = contents } },
+                                                .comment => .{ .comment = .{ .contents = contents } },
+                                                else => unreachable,
                                             },
-                                        }},
-                                    };
+                                        },
+                                    }};
                                 },
                                 else => {},
                             }
                         }
 
                         const children: []const Tree.Node = if (last.children.len == 0) &.{} else last.children;
-                        return .{
-                            .state = self.state,
-                            .stack = self.stack[0 .. self.stack.len - 1] ++ .{.{
-                                .maybe_open_token = last.maybe_open_token,
-                                .children = children ++ .{.{
-                                    .text = .{ .contents = token.inner },
-                                }},
+                        self.stack = self.stack[0 .. self.stack.len - 1] ++ .{.{
+                            .maybe_open_token = last.maybe_open_token,
+                            .children = children ++ .{.{
+                                .text = .{ .contents = token.inner },
                             }},
-                        };
+                        }};
                     },
                     else => unreachable,
                 }
@@ -605,57 +585,50 @@ pub const ComptimeBuilder = struct {
                 switch (token.kind) {
                     .element_close => {
                         const last = self.stack[self.stack.len - 1];
-                        return .{
-                            .state = .default,
-                            .stack = self.stack[0 .. self.stack.len - 1] ++ .{
-                                .{
-                                    .maybe_open_token = last.maybe_open_token,
-                                    .children = last.children ++ .{.{
-                                        .elem = .{
-                                            .tag_name = tag_details.tag_name,
-                                            .attributes = tag_details.attributes,
-                                            .tree = null,
-                                        },
-                                    }},
-                                },
-                                .{
-                                    .maybe_open_token = tag_details.open_token,
-                                    .children = &.{},
-                                },
+                        self.state = .default;
+                        self.stack = self.stack[0 .. self.stack.len - 1] ++ .{
+                            .{
+                                .maybe_open_token = last.maybe_open_token,
+                                .children = last.children ++ .{.{
+                                    .elem = .{
+                                        .tag_name = tag_details.tag_name,
+                                        .attributes = tag_details.attributes,
+                                        .tree = null,
+                                    },
+                                }},
+                            },
+                            .{
+                                .maybe_open_token = tag_details.open_token,
+                                .children = &.{},
                             },
                         };
                     },
                     .element_self_end => {
                         const last = self.stack[self.stack.len - 1];
-                        return .{
-                            .state = .default,
-                            .stack = self.stack[0 .. self.stack.len - 1] ++ .{
-                                .{
-                                    .maybe_open_token = last.maybe_open_token,
-                                    .children = last.children ++ .{.{
-                                        .elem = .{
-                                            .tag_name = tag_details.tag_name,
-                                            .attributes = tag_details.attributes,
-                                            .tree = null,
-                                        },
-                                    }},
-                                },
+                        self.state = .default;
+                        self.stack = self.stack[0 .. self.stack.len - 1] ++ .{
+                            .{
+                                .maybe_open_token = last.maybe_open_token,
+                                .children = last.children ++ .{.{
+                                    .elem = .{
+                                        .tag_name = tag_details.tag_name,
+                                        .attributes = tag_details.attributes,
+                                        .tree = null,
+                                    },
+                                }},
                             },
                         };
                     },
                     .element_attribute => {
-                        return .{
-                            .state = .{
-                                .elem_tag = .{
-                                    .open_token = tag_details.open_token,
-                                    .tag_name = tag_details.tag_name,
-                                    .attributes = tag_details.attributes ++ .{.{
-                                        .name = token.inner,
-                                        .value = null,
-                                    }},
-                                },
+                        self.state = .{
+                            .elem_tag = .{
+                                .open_token = tag_details.open_token,
+                                .tag_name = tag_details.tag_name,
+                                .attributes = tag_details.attributes ++ .{.{
+                                    .name = token.inner,
+                                    .value = null,
+                                }},
                             },
-                            .stack = self.stack,
                         };
                     },
                     .element_attribute_value => {
@@ -663,18 +636,15 @@ pub const ComptimeBuilder = struct {
 
                         const last_attribute = tag_details.attributes[tag_details.attributes.len - 1];
 
-                        return .{
-                            .state = .{
-                                .elem_tag = .{
-                                    .open_token = tag_details.open_token,
-                                    .tag_name = tag_details.tag_name,
-                                    .attributes = tag_details.attributes[0 .. tag_details.attributes.len - 1] ++ .{.{
-                                        .name = last_attribute.name,
-                                        .value = token.inner,
-                                    }},
-                                },
+                        self.state = .{
+                            .elem_tag = .{
+                                .open_token = tag_details.open_token,
+                                .tag_name = tag_details.tag_name,
+                                .attributes = tag_details.attributes[0 .. tag_details.attributes.len - 1] ++ .{.{
+                                    .name = last_attribute.name,
+                                    .value = token.inner,
+                                }},
                             },
-                            .stack = self.stack,
                         };
                     },
                     else => unreachable,
@@ -759,7 +729,7 @@ pub fn fromSliceComptime(comptime slice: []const u8) Tree {
         var builder = ComptimeBuilder{};
 
         while (try scanner.next()) |token| {
-            builder = try builder.getNextState(token);
+            try builder.feedToken(token);
         }
 
         break :blk try builder.finalise();
