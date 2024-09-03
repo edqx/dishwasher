@@ -107,6 +107,7 @@ const Tree = struct {
         pub const Text = struct {
             contents: []const u8,
 
+            // Return the text without any whitespace at the beginning or end.
             pub fn trimmed(self: Text) []const u8;
         }
 
@@ -129,11 +130,18 @@ const Tree = struct {
     // To free the returned slice, you can just call allocator.free(elements)
     // where 'elements' is the returned slice.
     pub fn elementsByTagNameAlloc(self: Tree, allocator: std.mem.Allocator, needle: []const u8) ![]Node.Elem;
-    pub fn elems(self: Tree, allocator: std.mem.Allocator, needle: []const u8) ![]Node.Elem;
+    pub fn elemsAlloc(self: Tree, allocator: std.mem.Allocator, needle: []const u8) ![]Node.Elem;
 
     // Get an element by the value of one of its attributes
     pub fn elementByAttributeValue(self: Tree, needle_name: []const u8, needle_value: []const u8) ?Node.Elem;
     pub fn elemByAttr(self: Tree, needle_name: []const u8, needle_value: []const u8) ?Node.Elem;
+
+    // Return the inner text (not including the elements) of the tree. Note that the
+    // result will be entirely unformatted.
+    pub fn concatTextAlloc(self: Tree, allocator: std.mem.Allocator) ![]const u8;
+    // Return the inner text (not including the elements) of the tree but without
+    // any whitespace at the start or end.
+    pub fn concatTextTrimmedAlloc(self: Tree, allocator: std.mem.Allocator) ![]const u8;
 }
 ```
 

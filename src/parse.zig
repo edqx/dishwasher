@@ -92,7 +92,7 @@ pub const Tree = struct {
 
             // Alias for attributeByName
             pub fn attr(self: Elem, needle: []const u8) ?Attr {
-                return self.attributeByName(needle);
+                return try self.attributeByName(needle);
             }
 
             // Get the value of an attribute given its name. Note that if the
@@ -105,13 +105,14 @@ pub const Tree = struct {
 
             // Alias for attributeValueByName
             pub fn attrValue(self: Elem, needle: []const u8) ?[]const u8 {
-                return self.attributeValueByName(needle);
+                return try self.attributeValueByName(needle);
             }
         };
 
         pub const Text = struct {
             contents: []const u8,
 
+            // Return the text without any whitespace at the beginning or end.
             pub fn trimmed(self: Text) []const u8 {
                 return std.mem.trim(u8, self.contents, &std.ascii.whitespace);
             }
@@ -144,7 +145,7 @@ pub const Tree = struct {
 
     // Alias for elementByTagName
     pub fn elem(self: Tree, needle: []const u8) ?Node.Elem {
-        return self.elementByTagName(needle);
+        return try self.elementByTagName(needle);
     }
 
     // Allocate a slice for all of the element children of a given tag name
@@ -169,8 +170,8 @@ pub const Tree = struct {
     }
 
     // Alias for elementsByTagName
-    pub fn elems(self: Tree, allocator: std.mem.Allocator, needle: []const u8) ![]Node.Elem {
-        return self.elementsByTagNameAlloc(allocator, needle);
+    pub fn elemsAlloc(self: Tree, allocator: std.mem.Allocator, needle: []const u8) ![]Node.Elem {
+        return try self.elementsByTagNameAlloc(allocator, needle);
     }
 
     // Get an element by the value of one of its attributes
@@ -190,7 +191,44 @@ pub const Tree = struct {
 
     // Alias for elementByAttributeValue
     pub fn elemByAttr(self: Tree, needle_name: []const u8, needle_value: []const u8) ?Node.Elem {
-        return self.elementByAttributeValue(needle_name, needle_value);
+        return try self.elementByAttributeValue(needle_name, needle_value);
+    }
+
+    // Return the inner text (not including the elements) of the tree. Note that the
+    // result will be entirely unformatted. Free with allocator.free(result);
+    pub fn concatTextAlloc(self: Tree, allocator: std.mem.Allocator) ![]const u8 {
+        var content_length: usize = 0;
+        for (self.children) |child| {
+            switch (child) {
+                .text => |text_child| content_length += text_child.contents.len,
+                else => {},
+            }
+        }
+        const combined = try allocator.alloc(u8, content_length);
+        errdefer allocator.free(combined);
+
+        var cursor: usize = 0;
+        for (self.children) |child| {
+            switch (child) {
+                .text => |text_child| {
+                    @memcpy(combined[cursor .. cursor + text_child.contents.len], text_child.contents);
+                    cursor += text_child.contents.len;
+                },
+                else => {},
+            }
+        }
+
+        return combined;
+    }
+
+    // Return the inner text (not including the elements) of the tree but without
+    // any whitespace at the start or end. Free with allocator.free(result).
+    pub fn concatTextTrimmedAlloc(self: Tree, allocator: std.mem.Allocator) ![]const u8 {
+        const combined = try self.concatTextAlloc(allocator);
+        defer allocator.free(combined);
+
+        const trimmed = std.mem.trim(u8, combined, &std.ascii.whitespace);
+        return try allocator.dupe(u8, trimmed);
     }
 };
 
@@ -803,7 +841,7 @@ test Tree {
                 },
                 .tree = null,
             } },
-            .{ .text = .{ .contents = "this is a gap!!!" } },
+            .{ .text = .{ .contents = "\n    this is a gap!!!    \n    \n    \n    " } },
             .{ .elem = .{
                 .tag_name = "goat",
                 .attributes = &.{},
@@ -840,4 +878,12 @@ test Tree {
     try std.testing.expectEqual(2, all_people.len);
     try std.testing.expectEqualDeep(jonas.?, all_people[0]);
     try std.testing.expectEqualDeep(kyle.?, all_people[1]);
+
+    const text = try tree.concatTextAlloc(std.testing.allocator);
+    defer std.testing.allocator.free(text);
+    const text2 = try tree.concatTextTrimmedAlloc(std.testing.allocator);
+    defer std.testing.allocator.free(text2);
+
+    try std.testing.expectEqualSlices(u8, "\n    this is a gap!!!    \n    \n    \n    ", text);
+    try std.testing.expectEqualSlices(u8, "this is a gap!!!", text2);
 }
