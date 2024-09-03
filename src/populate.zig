@@ -12,14 +12,12 @@ pub const ContentError = error{
     MissingPatternMatch,
 };
 
-pub fn PopulateShapeHeirarchy(comptime T: type, comptime shapes: anytype) type {
-    const last_shape = shapes[shapes.len - 1];
-
+pub fn PopulateShape(comptime T: type, comptime shape: anytype) type {
     const dest_type_info: std.builtin.Type = @typeInfo(T);
-    const ShapeType = @TypeOf(last_shape);
+    const ShapeType = @TypeOf(shape);
     const shape_type_info = @typeInfo(ShapeType);
 
-    const shape_print = std.fmt.comptimePrint("{}", .{last_shape});
+    const shape_print = std.fmt.comptimePrint("{}", .{shape});
 
     return struct {
         pub const OwnedDocument = struct {
@@ -31,6 +29,85 @@ pub fn PopulateShapeHeirarchy(comptime T: type, comptime shapes: anytype) type {
             }
         };
 
+        pub fn deinit(allocator: std.mem.Allocator, val: T) void {
+            switch (shape_type_info) {
+                .type => {
+                    if (shape == Tree) {
+                        return;
+                    }
+                    if (dest_type_info == .pointer and dest_type_info.pointer.size == .One) {
+                        Populate(shape).deinit(allocator, val.*);
+                        allocator.destroy(val);
+                        return;
+                    }
+                    Populate(shape).deinit(allocator, val);
+                },
+                .@"struct" => |struct_info| {
+                    if (struct_info.is_tuple) {
+                        if (struct_info.fields.len == 2 and shape[0] == .attribute) {
+                            allocator.free(val);
+                        } else if (struct_info.fields.len == 2 and shape[0] == .attribute_exists) {
+                            // no free
+                        } else if (struct_info.fields.len == 2 and shape[0] == .maybe) {
+                            const ChildType = dest_type_info.optional.child;
+                            const child_shape = shape[1];
+                            if (val) |non_null| {
+                                PopulateShape(ChildType, child_shape).deinit(allocator, non_null);
+                            }
+                        } else if (struct_info.fields.len == 3 and shape[0] == .elements) {
+                            const ChildType = dest_type_info.pointer.child;
+                            const child_shape = shape[2];
+
+                            var i = val.len;
+                            while (i > 0) {
+                                i -= 1;
+                                PopulateShape(ChildType, child_shape).deinit(allocator, val[i]);
+                            }
+                            allocator.free(val);
+                        } else if (struct_info.fields.len == 3 and shape[0] == .element) {
+                            const child_shape = shape[2];
+                            PopulateShape(T, child_shape).deinit(allocator, val);
+                        } else if (struct_info.fields.len > 2 and shape[0] == .one_of) {
+                            const union_fields = dest_type_info.@"union".fields;
+                            inline for (union_fields, 0..) |field, i| {
+                                const child_shape = shape[1 + i];
+                                if (std.mem.eql(u8, @tagName(val), field.name)) {
+                                    PopulateShape(field.type, child_shape)
+                                        .deinit(allocator, @field(val, field.name));
+                                }
+                            }
+                        } else {
+                            @compileError("Unknown shape: " ++ shape_print);
+                        }
+                    } else {
+                        const struct_fields = dest_type_info.@"struct".fields;
+                        const shape_fields = struct_info.fields;
+
+                        comptime var i: usize = shape_fields.len;
+                        inline while (i > 0) {
+                            i -= 1;
+                            const shape_field = shape_fields[i];
+                            const base_field = comptime for (struct_fields) |field| {
+                                if (std.mem.eql(u8, field.name, shape_field.name)) {
+                                    break field;
+                                }
+                            } else @compileError("Missing field '" ++ shape_field.name ++ "' on base type " ++ @typeName(T));
+
+                            const shape_field_val = @field(shape, shape_field.name);
+                            PopulateShape(base_field.type, shape_field_val)
+                                .deinit(allocator, @field(val, base_field.name));
+                        }
+                    }
+                },
+                .enum_literal => {
+                    if (shape == .content or shape == .content_trimmed) {
+                        allocator.free(val);
+                    }
+                },
+                else => @compileError("Unknown shape type " ++ shape_print),
+            }
+        }
+
         pub fn fromTreeImpl(
             allocator: std.mem.Allocator,
             tree: Tree,
@@ -39,7 +116,7 @@ pub fn PopulateShapeHeirarchy(comptime T: type, comptime shapes: anytype) type {
         ) (std.mem.Allocator.Error || ContentError)!void {
             switch (shape_type_info) {
                 .type => {
-                    if (last_shape == Tree) {
+                    if (shape == Tree) {
                         if (T != Tree) {
                             @compileError("Shape " ++ @typeName(Tree) ++ " cannot be applied to type " ++ @typeName(T) ++ ", must be the Tree type");
                         }
@@ -51,17 +128,17 @@ pub fn PopulateShapeHeirarchy(comptime T: type, comptime shapes: anytype) type {
                         val.* = try allocator.create(child_type);
                         errdefer allocator.destroy(val.*);
 
-                        val.*.* = try Populate(last_shape).initFromTreeImpl(
+                        val.*.* = try Populate(shape).initFromTreeImpl(
                             allocator,
                             tree,
                             attributes,
                         );
                         return;
                     }
-                    if (T != last_shape) {
+                    if (T != shape) {
                         @compileError("Shape " ++ shape_print ++ " cannot be applied to type " ++ @typeName(T));
                     }
-                    val.* = try Populate(last_shape).initFromTreeImpl(
+                    val.* = try Populate(shape).initFromTreeImpl(
                         allocator,
                         tree,
                         attributes,
@@ -69,34 +146,34 @@ pub fn PopulateShapeHeirarchy(comptime T: type, comptime shapes: anytype) type {
                 },
                 .@"struct" => |struct_info| {
                     if (struct_info.is_tuple) {
-                        if (struct_info.fields.len == 2 and last_shape[0] == .attribute) {
+                        if (struct_info.fields.len == 2 and shape[0] == .attribute) {
                             if (T != []const u8 and T != []u8) {
                                 @compileError("Shape " ++ shape_print ++ " cannot be applied to type " ++ @typeName(T) ++ ", must be a string type");
                             }
 
                             val.* = for (attributes) |attribute| {
-                                if (std.mem.eql(u8, attribute.name, last_shape[1])) {
-                                    break attribute.value orelse return ContentError.MissingAttributeValue;
+                                if (std.mem.eql(u8, attribute.name, shape[1])) {
+                                    const value = attribute.value orelse return ContentError.MissingAttributeValue;
+                                    break try allocator.dupe(u8, value);
                                 }
                             } else return ContentError.MissingAttribute;
-                        } else if (struct_info.fields.len == 2 and last_shape[0] == .attribute_exists) {
+                        } else if (struct_info.fields.len == 2 and shape[0] == .attribute_exists) {
                             if (T != bool) {
                                 @compileError("Shape " ++ shape_print ++ " cannot be applied to type " ++ @typeName(T) ++ ", must be a boolean type");
                             }
 
                             val.* = for (attributes) |attribute| {
-                                if (std.mem.eql(u8, attribute.name, last_shape[1])) {
+                                if (std.mem.eql(u8, attribute.name, shape[1])) {
                                     break true;
                                 }
                             } else if (T == bool) false;
-                        } else if (struct_info.fields.len == 2 and last_shape[0] == .maybe) {
+                        } else if (struct_info.fields.len == 2 and shape[0] == .maybe) {
                             if (dest_type_info != .optional) {
                                 @compileError("Shape " ++ shape_print ++ " cannot be applied to type " ++ @typeName(T) ++ ", must be optional");
                             }
 
                             const ChildType = dest_type_info.optional.child;
-
-                            const child_shape = last_shape[1];
+                            const child_shape = shape[1];
 
                             val.* = PopulateShape(ChildType, child_shape).initFromTreeImpl(
                                 allocator,
@@ -112,23 +189,29 @@ pub fn PopulateShapeHeirarchy(comptime T: type, comptime shapes: anytype) type {
                                 => null,
                                 else => return e,
                             };
-                        } else if (struct_info.fields.len == 3 and last_shape[0] == .elements) {
+                        } else if (struct_info.fields.len == 3 and shape[0] == .elements) {
                             if (dest_type_info != .pointer or dest_type_info.pointer.size != .Slice) {
                                 @compileError("Shape " ++ shape_print ++ " cannot be applied to type " ++ @typeName(T) ++ ", must be a slice type");
                             }
 
                             const ChildType = dest_type_info.pointer.child;
 
-                            const tag_name = last_shape[1];
-                            const child_shape = last_shape[2];
+                            const tag_name = shape[1];
+                            const child_shape = shape[2];
 
-                            var elems = std.ArrayList(ChildType).init(allocator);
+                            var result = std.ArrayList(ChildType).init(allocator);
+                            errdefer result.deinit();
+                            errdefer {
+                                for (result.items) |item| {
+                                    PopulateShape(ChildType, child_shape).deinit(allocator, item);
+                                }
+                            }
 
                             for (tree.children) |child| {
                                 switch (child) {
                                     .elem => |elem_child| {
                                         if (std.mem.eql(u8, elem_child.tag_name, tag_name)) {
-                                            try elems.append(try PopulateShape(ChildType, child_shape).initFromTreeImpl(
+                                            try result.append(try PopulateShape(ChildType, child_shape).initFromTreeImpl(
                                                 allocator,
                                                 elem_child.tree orelse .{ .children = &.{} },
                                                 elem_child.attributes,
@@ -139,10 +222,10 @@ pub fn PopulateShapeHeirarchy(comptime T: type, comptime shapes: anytype) type {
                                 }
                             }
 
-                            val.* = try elems.toOwnedSlice();
-                        } else if (struct_info.fields.len == 3 and last_shape[0] == .element) {
-                            const tag_name = last_shape[1];
-                            const child_shape = last_shape[2];
+                            val.* = try result.toOwnedSlice();
+                        } else if (struct_info.fields.len == 3 and shape[0] == .element) {
+                            const tag_name = shape[1];
+                            const child_shape = shape[2];
 
                             const elem: Tree.Node.Elem = for (tree.children) |child| {
                                 switch (child) {
@@ -161,7 +244,7 @@ pub fn PopulateShapeHeirarchy(comptime T: type, comptime shapes: anytype) type {
                                 elem.attributes,
                                 val,
                             );
-                        } else if (struct_info.fields.len > 2 and last_shape[0] == .one_of) {
+                        } else if (struct_info.fields.len > 2 and shape[0] == .one_of) {
                             if (dest_type_info != .@"union") {
                                 @compileError("Shape " ++ shape_print ++ " cannot be applied to type " ++ @typeName(T) ++ ", must be a union type");
                             }
@@ -174,15 +257,15 @@ pub fn PopulateShapeHeirarchy(comptime T: type, comptime shapes: anytype) type {
                             }
 
                             val.* = inline for (union_fields, 0..num_child_shapes) |field, i| {
-                                const shape = last_shape[1 + i];
-                                const child_shape_type_info = @typeInfo(@TypeOf(shape));
-                                if (child_shape_type_info == .enum_literal and shape == .none) {
+                                const child_shape = shape[1 + i];
+                                const child_shape_type_info = @typeInfo(@TypeOf(child_shape));
+                                if (child_shape_type_info == .enum_literal and child_shape == .none) {
                                     if (field.type != void) {
                                         @compileError("Shape " ++ shape_print ++ " cannot be applied to type " ++ @typeName(T) ++ ", must be null");
                                     }
                                     break @unionInit(T, field.name, {});
                                 }
-                                const maybe_found = PopulateShape(field.type, shape).initFromTreeImpl(
+                                const maybe_found = PopulateShape(field.type, child_shape).initFromTreeImpl(
                                     allocator,
                                     tree,
                                     attributes,
@@ -211,21 +294,47 @@ pub fn PopulateShapeHeirarchy(comptime T: type, comptime shapes: anytype) type {
                         const struct_fields = dest_type_info.@"struct".fields;
                         const shape_fields = struct_info.fields;
 
+                        var i: usize = 0;
+                        errdefer {
+                            // we have to reverse all of the fields by deinitialising
+                            // them. the problem is that the number of fields that were
+                            // initialised is runtime-known, whereas the fields themselves
+                            // need to be comptime known. so this code is weird.
+                            comptime var j: usize = shape_fields.len;
+                            inline while (j > 0) {
+                                j -= 1;
+                                if (j < i) {
+                                    const shape_field = shape_fields[j];
+                                    const base_field = comptime for (struct_fields) |field| {
+                                        if (std.mem.eql(u8, field.name, shape_field.name)) {
+                                            break field;
+                                        }
+                                    } else @compileError("Missing field '" ++ shape_field.name ++ "' on base type " ++ @typeName(T));
+
+                                    const shape_field_val = @field(shape, shape_field.name);
+                                    PopulateShape(base_field.type, shape_field_val)
+                                        .deinit(allocator, @field(val, base_field.name));
+                                }
+                            }
+                        }
+
                         inline for (shape_fields) |shape_field| {
+                            defer i += 1;
+
                             const base_field = comptime for (struct_fields) |field| {
                                 if (std.mem.eql(u8, field.name, shape_field.name)) {
                                     break field;
                                 }
                             } else @compileError("Missing field '" ++ shape_field.name ++ "' on base type " ++ @typeName(T));
 
-                            const shape_field_val = @field(last_shape, shape_field.name);
-                            @field(val.*, shape_field.name) = try PopulateShape(base_field.type, shape_field_val)
+                            const shape_field_val = @field(shape, shape_field.name);
+                            @field(val.*, base_field.name) = try PopulateShape(base_field.type, shape_field_val)
                                 .initFromTreeImpl(allocator, tree, attributes);
                         }
                     }
                 },
                 .enum_literal => {
-                    if (last_shape == .content or last_shape == .content_trimmed) {
+                    if (shape == .content or shape == .content_trimmed) {
                         if (T != []const u8 and T != []u8) {
                             @compileError("Shape " ++ shape_print ++ " cannot be applied to type " ++ @typeName(T) ++ ", must be a string type");
                         }
@@ -251,7 +360,7 @@ pub fn PopulateShapeHeirarchy(comptime T: type, comptime shapes: anytype) type {
                             }
                         }
 
-                        if (last_shape == .content_trimmed) {
+                        if (shape == .content_trimmed) {
                             defer allocator.free(combined);
 
                             const trimmed = std.mem.trim(u8, combined, &std.ascii.whitespace);
@@ -264,7 +373,7 @@ pub fn PopulateShapeHeirarchy(comptime T: type, comptime shapes: anytype) type {
                         return;
                     }
                 },
-                else => @compileError("Unknown destination type " ++ shape_print),
+                else => @compileError("Unknown shape type " ++ shape_print),
             }
         }
 
@@ -316,10 +425,6 @@ pub fn PopulateShapeHeirarchy(comptime T: type, comptime shapes: anytype) type {
             return .{ .owned_tree = owned_tree, .value = value };
         }
     };
-}
-
-pub fn PopulateShape(comptime T: type, comptime shape: anytype) type {
-    return PopulateShapeHeirarchy(T, .{shape});
 }
 
 pub fn Populate(comptime T: type) type {
@@ -415,7 +520,8 @@ test Populate {
     var owned_tree = try parse.fromSlice(std.testing.allocator, buf);
     defer owned_tree.deinit();
 
-    const populate: Document = try Populate(Document).initFromTreeOwned(owned_tree.arena.allocator(), owned_tree.tree);
+    const populate: Document = try Populate(Document).initFromTreeOwned(std.testing.allocator, owned_tree.tree);
+    defer Populate(Document).deinit(std.testing.allocator, populate);
 
     try std.testing.expectEqual(populate.people.len, 2);
     try std.testing.expectEqualSlices(u8, populate.people[0].name, "Judas");
