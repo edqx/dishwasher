@@ -77,6 +77,66 @@ for (diagnostics.defects.items) |defect| {
 }
 ```
 
+#### Tree API
+The returned tree has the following signature:
+```zig
+const Tree = struct {
+    pub const Node = union(enum) {
+        pub const Elem = struct {
+            pub const Attr = struct {
+                name: []const u8,
+                value: ?[]const u8,
+            };
+
+            tag_name: []const u8,
+            attributes: []const Attr,
+            tree: ?Tree,
+
+            // Get an attribute given its name.
+            pub fn attributeByName(self: Elem, needle: []const u8) ?Attr;
+            pub fn attr(self: Elem, needle: []const u8) ?Attr;
+
+            // Get the value of an attribute given its name. Note that if the
+            // attribute has no value, e.g., <button disabled> this will
+            // still return null. Use attr or attributeByName in those
+            // cases.
+            pub fn attributeValueByName(self: Elem, needle: []const u8) ?[]const u8;
+            pub fn attrValue(self: Elem, needle: []const u8) ?[]const u8;
+        };
+
+        pub const Text = struct {
+            contents: []const u8,
+
+            pub fn trimmed(self: Text) []const u8;
+        }
+
+        pub const Comment = struct {
+            contents: []const u8,
+        };
+
+        elem: Elem,
+        text: text,
+        comment: Comment,
+    };
+
+    children: []const Node,
+
+    // Find an element child by its tag name
+    pub fn elementByTagName(self: Tree, needle: []const u8) ?Node.Elem;
+    pub fn elem(self: Tree, needle: []const u8) ?Node.Elem;
+    
+    // Allocate a slice for all of the element children of a given tag name
+    // To free the returned slice, you can just call allocator.free(elements)
+    // where 'elements' is the returned slice.
+    pub fn elementsByTagNameAlloc(self: Tree, allocator: std.mem.Allocator, needle: []const u8) ![]Node.Elem;
+    pub fn elems(self: Tree, allocator: std.mem.Allocator, needle: []const u8) ![]Node.Elem;
+
+    // Get an element by the value of one of its attributes
+    pub fn elementByAttributeValue(self: Tree, needle_name: []const u8, needle_value: []const u8) ?Node.Elem;
+    pub fn elemByAttr(self: Tree, needle_name: []const u8, needle_value: []const u8) ?Node.Elem;
+}
+```
+
 ### Populate API
 Often, it's useful to be able to populate a given struct with values from an XML
 document. That is, 'reading' the document into the struct.
@@ -179,6 +239,8 @@ there's a custom API for this:
 ```ts
 const tree = dishwasher.parse.comptimeFromSlice(xml_text);
 ```
+
+Check out the [Tree API](#tree-api) to know what to do with the returned value.
 
 ### Scanner API
 If you want low-level access to the iterator for lexing an XML document,

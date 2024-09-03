@@ -113,7 +113,7 @@ pub const Tree = struct {
             contents: []const u8,
 
             pub fn trimmed(self: Text) []const u8 {
-                _ = self;
+                return std.mem.trim(u8, self.contents, &std.ascii.whitespace);
             }
         };
 
