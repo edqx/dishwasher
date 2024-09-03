@@ -753,7 +753,7 @@ pub fn fromReader(allocator: std.mem.Allocator, reader: anytype) !Tree.Owned {
     return fromReaderImpl(allocator, reader, null);
 }
 
-pub fn fromSliceCompnertime(comptime slice: []const u8) Tree {
+pub fn fromSliceComptime(comptime slice: []const u8) Tree {
     return comptime blk: {
         var scanner = Scanner.fromSlice(slice);
         var builder = ComptimeBuilder{};
