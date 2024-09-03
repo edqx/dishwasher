@@ -1,7 +1,7 @@
 const std = @import("std");
 const parse = @import("./parse.zig");
 
-const Tree = parse.Builder.Tree;
+const Tree = parse.Tree;
 
 pub const ContentError = error{
     MissingAttribute,

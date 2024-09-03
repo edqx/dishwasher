@@ -85,7 +85,7 @@ pub const Tree = struct {
             pub fn attributeByName(self: Elem, needle: []const u8) ?Attr {
                 return for (self.attributes) |attribute| {
                     if (std.mem.eql(u8, attribute.name, needle)) {
-                        break attr;
+                        break attribute;
                     }
                 } else null;
             }
@@ -100,78 +100,12 @@ pub const Tree = struct {
             // still return null. Use attr or attributeByName in those
             // cases.
             pub fn attributeValueByName(self: Elem, needle: []const u8) ?[]const u8 {
-                return (self.attributeByName(needle) orelse return null).name;
+                return (self.attributeByName(needle) orelse return null).value;
             }
 
             // Alias for attributeValueByName
             pub fn attrValue(self: Elem, needle: []const u8) ?[]const u8 {
                 return self.attributeValueByName(needle);
-            }
-
-            // Find an element child by its tag name
-            pub fn elementByTagName(self: Elem, needle: []const u8) ?Elem {
-                const tree = (self.tree orelse return null);
-                return for (tree.children) |child| {
-                    switch (child) {
-                        .elem => |elem_child| {
-                            if (std.mem.eql(u8, elem_child.tag_name, needle)) {
-                                break elem_child;
-                            }
-                        },
-                        else => {},
-                    }
-                } else null;
-            }
-
-            // Alias for elementByTagName
-            pub fn elem(self: Elem, needle: []const u8) ?Elem {
-                return self.elementByTagName(needle);
-            }
-
-            // Allocate a slice for all of the element children of a given tag name
-            pub fn elementsByTagName(self: Elem, allocator: std.mem.Allocator, needle: []const u8) ![]Elem {
-                const tree = (self.tree orelse return &.{});
-                var out = std.ArrayList(Elem).init(allocator);
-                errdefer out.deinit();
-
-                for (tree.children) |child| {
-                    switch (child) {
-                        .elem => |elem_child| {
-                            if (std.mem.eql(u8, elem_child.tag_name, needle)) {
-                                try out.append(elem_child);
-                            }
-                        },
-                        else => {},
-                    }
-                }
-
-                return out.toOwnedSlice();
-            }
-
-            // Alias for elementsByTagName
-            pub fn elems(self: Elem, allocator: std.mem.Allocator, needle: []const u8) ![]Elem {
-                return self.elementsByTagName(allocator, needle);
-            }
-
-            // Get an element by the value of one of its attributes
-            pub fn elementByAttributeValue(self: Elem, needle_name: []const u8, needle_value: []const u8) ?Elem {
-                const tree = (self.tree orelse return null);
-                return for (tree.children) |child| {
-                    switch (child) {
-                        .elem => |elem_child| {
-                            const attr_value = elem_child.attributeByName(needle_name) orelse continue;
-                            if (std.mem.eql(u8, attr_value, needle_value)) {
-                                break elem_child;
-                            }
-                        },
-                        else => {},
-                    }
-                } else null;
-            }
-
-            // Alias for elementByAttributeValue
-            pub fn elemByAttr(self: Elem, needle_name: []const u8, needle_value: []const u8) ?Elem {
-                return self.elementByAttributeValue(needle_name, needle_value);
             }
         };
 
@@ -193,6 +127,71 @@ pub const Tree = struct {
     };
 
     children: []const Node,
+
+    // Find an element child by its tag name
+    pub fn elementByTagName(self: Tree, needle: []const u8) ?Node.Elem {
+        return for (self.children) |child| {
+            switch (child) {
+                .elem => |elem_child| {
+                    if (std.mem.eql(u8, elem_child.tag_name, needle)) {
+                        break elem_child;
+                    }
+                },
+                else => {},
+            }
+        } else null;
+    }
+
+    // Alias for elementByTagName
+    pub fn elem(self: Tree, needle: []const u8) ?Node.Elem {
+        return self.elementByTagName(needle);
+    }
+
+    // Allocate a slice for all of the element children of a given tag name
+    // To free the returned slice, you can just call allocator.free(elements)
+    // where 'elements' is the returned slice.
+    pub fn elementsByTagNameAlloc(self: Tree, allocator: std.mem.Allocator, needle: []const u8) ![]Node.Elem {
+        var out = std.ArrayList(Node.Elem).init(allocator);
+        errdefer out.deinit();
+
+        for (self.children) |child| {
+            switch (child) {
+                .elem => |elem_child| {
+                    if (std.mem.eql(u8, elem_child.tag_name, needle)) {
+                        try out.append(elem_child);
+                    }
+                },
+                else => {},
+            }
+        }
+
+        return out.toOwnedSlice();
+    }
+
+    // Alias for elementsByTagName
+    pub fn elems(self: Tree, allocator: std.mem.Allocator, needle: []const u8) ![]Node.Elem {
+        return self.elementsByTagNameAlloc(allocator, needle);
+    }
+
+    // Get an element by the value of one of its attributes
+    pub fn elementByAttributeValue(self: Tree, needle_name: []const u8, needle_value: []const u8) ?Node.Elem {
+        return for (self.children) |child| {
+            switch (child) {
+                .elem => |elem_child| {
+                    const attribute = elem_child.attributeByName(needle_name) orelse continue;
+                    if (std.mem.eql(u8, attribute.value orelse continue, needle_value)) {
+                        break elem_child;
+                    }
+                },
+                else => {},
+            }
+        } else null;
+    }
+
+    // Alias for elementByAttributeValue
+    pub fn elemByAttr(self: Tree, needle_name: []const u8, needle_value: []const u8) ?Node.Elem {
+        return self.elementByAttributeValue(needle_name, needle_value);
+    }
 };
 
 pub const Builder = struct {
@@ -643,7 +642,7 @@ pub const ComptimeBuilder = struct {
     }
 };
 
-fn parseFromSliceImpl(allocator: std.mem.Allocator, slice: []const u8, maybe_diagnostics: ?*Diagnostics) !Builder.Tree.Owned {
+fn parseFromSliceImpl(allocator: std.mem.Allocator, slice: []const u8, maybe_diagnostics: ?*Diagnostics) !Tree.Owned {
     var arena = std.heap.ArenaAllocator.init(allocator);
     errdefer arena.deinit();
 
@@ -661,16 +660,16 @@ fn parseFromSliceImpl(allocator: std.mem.Allocator, slice: []const u8, maybe_dia
     };
 }
 
-pub fn parseFromSliceDiagnostics(allocator: std.mem.Allocator, slice: []const u8, diagnostics: *Diagnostics) !Builder.Tree.Owned {
+pub fn parseFromSliceDiagnostics(allocator: std.mem.Allocator, slice: []const u8, diagnostics: *Diagnostics) !Tree.Owned {
     const fromSliceDiagnostics = try parseFromSliceImpl(allocator, slice, diagnostics);
     return fromSliceDiagnostics;
 }
 
-pub fn fromSlice(allocator: std.mem.Allocator, slice: []const u8) !Builder.Tree.Owned {
+pub fn fromSlice(allocator: std.mem.Allocator, slice: []const u8) !.Tree.Owned {
     return parseFromSliceImpl(allocator, slice, null);
 }
 
-fn fromReaderImpl(allocator: std.mem.Allocator, reader: anytype, maybe_diagnostics: ?*Diagnostics) !Builder.Tree.Owned {
+fn fromReaderImpl(allocator: std.mem.Allocator, reader: anytype, maybe_diagnostics: ?*Diagnostics) !Tree.Owned {
     var arena = std.heap.ArenaAllocator.init(allocator);
     errdefer arena.deinit();
 
@@ -688,16 +687,16 @@ fn fromReaderImpl(allocator: std.mem.Allocator, reader: anytype, maybe_diagnosti
     };
 }
 
-pub fn fromReaderDiagnostics(allocator: std.mem.Allocator, reader: anytype, diagnostics: *Diagnostics) !Builder.Tree.Owned {
+pub fn fromReaderDiagnostics(allocator: std.mem.Allocator, reader: anytype, diagnostics: *Diagnostics) !Tree.Owned {
     const result = try fromReaderImpl(allocator, reader, diagnostics);
     return result;
 }
 
-pub fn fromReader(allocator: std.mem.Allocator, reader: anytype) !Builder.Tree.Owned {
+pub fn fromReader(allocator: std.mem.Allocator, reader: anytype) !Tree.Owned {
     return fromReaderImpl(allocator, reader, null);
 }
 
-pub fn comptimeFromSlice(comptime slice: []const u8) ComptimeBuilder.Tree {
+pub fn comptimeFromSlice(comptime slice: []const u8) Tree {
     return comptime blk: {
         var scanner = Scanner.fromSlice(slice);
         var builder = ComptimeBuilder{};
@@ -711,55 +710,53 @@ pub fn comptimeFromSlice(comptime slice: []const u8) ComptimeBuilder.Tree {
 }
 
 test fromReader {
-    {
-        const buf = "<div betrayed-by=\"judas\">jesus <p>christ</p> lord <amen/></div>";
-        var fba = std.io.fixedBufferStream(buf);
+    const buf = "<div betrayed-by=\"judas\">jesus <p>christ</p> lord <amen/></div>";
+    var fba = std.io.fixedBufferStream(buf);
 
-        const parsed = try fromReader(std.testing.allocator, fba.reader());
-        defer parsed.deinit();
+    const parsed = try fromReader(std.testing.allocator, fba.reader());
+    defer parsed.deinit();
 
-        try std.testing.expectEqual(parsed.tree.children.len, 1);
-        try std.testing.expect(parsed.tree.children[0] == .elem);
-        try std.testing.expectEqualSlices(u8, parsed.tree.children[0].elem.tag_name, "div");
-        try std.testing.expectEqual(parsed.tree.children[0].elem.attributes.len, 1);
-        try std.testing.expectEqualSlices(u8, parsed.tree.children[0].elem.attributes[0].name, "betrayed-by");
-        try std.testing.expectEqualSlices(u8, parsed.tree.children[0].elem.attributes[0].value.?, "judas");
-        try std.testing.expect(parsed.tree.children[0].elem.tree != null);
-        try std.testing.expectEqual(parsed.tree.children[0].elem.tree.?.children.len, 4);
+    try std.testing.expectEqual(parsed.tree.children.len, 1);
+    try std.testing.expect(parsed.tree.children[0] == .elem);
+    try std.testing.expectEqualSlices(u8, parsed.tree.children[0].elem.tag_name, "div");
+    try std.testing.expectEqual(parsed.tree.children[0].elem.attributes.len, 1);
+    try std.testing.expectEqualSlices(u8, parsed.tree.children[0].elem.attributes[0].name, "betrayed-by");
+    try std.testing.expectEqualSlices(u8, parsed.tree.children[0].elem.attributes[0].value.?, "judas");
+    try std.testing.expect(parsed.tree.children[0].elem.tree != null);
+    try std.testing.expectEqual(parsed.tree.children[0].elem.tree.?.children.len, 4);
 
-        try std.testing.expect(parsed.tree.children[0].elem.tree.?.children[0] == .text);
-        try std.testing.expectEqualSlices(u8, parsed.tree.children[0].elem.tree.?.children[0].text.contents, "jesus ");
+    try std.testing.expect(parsed.tree.children[0].elem.tree.?.children[0] == .text);
+    try std.testing.expectEqualSlices(u8, parsed.tree.children[0].elem.tree.?.children[0].text.contents, "jesus ");
 
-        try std.testing.expect(parsed.tree.children[0].elem.tree.?.children[1] == .elem);
-        try std.testing.expectEqualSlices(u8, parsed.tree.children[0].elem.tree.?.children[1].elem.tag_name, "p");
-        try std.testing.expect(parsed.tree.children[0].elem.tree.?.children[0] == .text);
-        try std.testing.expectEqual(parsed.tree.children[0].elem.tree.?.children[1].elem.attributes.len, 0);
-        try std.testing.expect(parsed.tree.children[0].elem.tree.?.children[1].elem.tree != null);
-        try std.testing.expectEqual(parsed.tree.children[0].elem.tree.?.children[1].elem.tree.?.children.len, 1);
-        try std.testing.expect(parsed.tree.children[0].elem.tree.?.children[1].elem.tree.?.children[0] == .text);
-        try std.testing.expectEqualSlices(u8, parsed.tree.children[0].elem.tree.?.children[1].elem.tree.?.children[0].text.contents, "christ");
+    try std.testing.expect(parsed.tree.children[0].elem.tree.?.children[1] == .elem);
+    try std.testing.expectEqualSlices(u8, parsed.tree.children[0].elem.tree.?.children[1].elem.tag_name, "p");
+    try std.testing.expect(parsed.tree.children[0].elem.tree.?.children[0] == .text);
+    try std.testing.expectEqual(parsed.tree.children[0].elem.tree.?.children[1].elem.attributes.len, 0);
+    try std.testing.expect(parsed.tree.children[0].elem.tree.?.children[1].elem.tree != null);
+    try std.testing.expectEqual(parsed.tree.children[0].elem.tree.?.children[1].elem.tree.?.children.len, 1);
+    try std.testing.expect(parsed.tree.children[0].elem.tree.?.children[1].elem.tree.?.children[0] == .text);
+    try std.testing.expectEqualSlices(u8, parsed.tree.children[0].elem.tree.?.children[1].elem.tree.?.children[0].text.contents, "christ");
 
-        try std.testing.expect(parsed.tree.children[0].elem.tree.?.children[2] == .text);
-        try std.testing.expectEqualSlices(u8, parsed.tree.children[0].elem.tree.?.children[2].text.contents, " lord ");
+    try std.testing.expect(parsed.tree.children[0].elem.tree.?.children[2] == .text);
+    try std.testing.expectEqualSlices(u8, parsed.tree.children[0].elem.tree.?.children[2].text.contents, " lord ");
 
-        try std.testing.expect(parsed.tree.children[0].elem.tree.?.children[3] == .elem);
-        try std.testing.expectEqualSlices(u8, parsed.tree.children[0].elem.tree.?.children[3].elem.tag_name, "amen");
-        try std.testing.expectEqual(parsed.tree.children[0].elem.tree.?.children[3].elem.attributes.len, 0);
-        try std.testing.expect(parsed.tree.children[0].elem.tree.?.children[3].elem.tree == null);
-    }
+    try std.testing.expect(parsed.tree.children[0].elem.tree.?.children[3] == .elem);
+    try std.testing.expectEqualSlices(u8, parsed.tree.children[0].elem.tree.?.children[3].elem.tag_name, "amen");
+    try std.testing.expectEqual(parsed.tree.children[0].elem.tree.?.children[3].elem.attributes.len, 0);
+    try std.testing.expect(parsed.tree.children[0].elem.tree.?.children[3].elem.tree == null);
+}
 
-    {
-        const buf = "<div><p></p>";
-        var fba = std.io.fixedBufferStream(buf);
+test fromReaderDiagnostics {
+    const buf = "<div><p></p>";
+    var fba = std.io.fixedBufferStream(buf);
 
-        var diagnostics = Diagnostics.init(std.testing.allocator);
-        defer diagnostics.deinit();
+    var diagnostics = Diagnostics.init(std.testing.allocator);
+    defer diagnostics.deinit();
 
-        const parsed = try fromReaderDiagnostics(std.testing.allocator, fba.reader(), &diagnostics);
-        defer parsed.deinit();
+    const parsed = try fromReaderDiagnostics(std.testing.allocator, fba.reader(), &diagnostics);
+    defer parsed.deinit();
 
-        try std.testing.expectEqual(diagnostics.defects.items.len, 1);
-    }
+    try std.testing.expectEqual(diagnostics.defects.items.len, 1);
 }
 
 test comptimeFromSlice {
@@ -793,4 +790,54 @@ test comptimeFromSlice {
     try std.testing.expectEqualSlices(u8, tree.children[0].elem.tree.?.children[3].elem.tag_name, "amen");
     try std.testing.expectEqual(tree.children[0].elem.tree.?.children[3].elem.attributes.len, 0);
     try std.testing.expect(tree.children[0].elem.tree.?.children[3].elem.tree == null);
+}
+
+test Tree {
+    const tree: Tree = .{
+        .children = &.{
+            .{ .elem = .{
+                .tag_name = "person",
+                .attributes = &.{
+                    .{ .name = "name", .value = "Jonas" },
+                    .{ .name = "age", .value = "18" },
+                },
+                .tree = null,
+            } },
+            .{ .text = .{ .contents = "this is a gap!!!" } },
+            .{ .elem = .{
+                .tag_name = "goat",
+                .attributes = &.{},
+                .tree = null,
+            } },
+            .{ .elem = .{
+                .tag_name = "person",
+                .attributes = &.{
+                    .{ .name = "name", .value = "Kyle" },
+                    .{ .name = "age", .value = "24" },
+                },
+                .tree = null,
+            } },
+        },
+    };
+
+    const jonas = tree.elementByTagName("person");
+    const kyle = tree.elementByAttributeValue("name", "Kyle");
+
+    try std.testing.expect(jonas != null);
+    try std.testing.expect(kyle != null);
+    try std.testing.expectEqualSlices(u8, "person", jonas.?.tag_name);
+    try std.testing.expectEqualSlices(u8, "person", kyle.?.tag_name);
+    try std.testing.expectEqualSlices(u8, "Jonas", jonas.?.attributes[0].value.?);
+    try std.testing.expectEqualSlices(u8, "Kyle", kyle.?.attributes[0].value.?);
+
+    const jonas_name = tree.children[0].elem.attributeValueByName("name");
+    try std.testing.expect(jonas_name != null);
+    try std.testing.expectEqualSlices(u8, "Jonas", jonas_name.?);
+
+    const all_people = try tree.elementsByTagNameAlloc(std.testing.allocator, "person");
+    defer std.testing.allocator.free(all_people);
+
+    try std.testing.expectEqual(2, all_people.len);
+    try std.testing.expectEqualDeep(jonas.?, all_people[0]);
+    try std.testing.expectEqualDeep(kyle.?, all_people[1]);
 }

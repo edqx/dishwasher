@@ -159,15 +159,15 @@ const register = try dishwasher.Populate(Register).initFromTreeOwned(allocator, 
 ```
 
 If some field accepts any sort of XML document shape, you can instruct it
-to accept a `parse.Builder.Tree`:
+to accept a `parse.Tree`:
 
 ```zig
 const Register = struct {
   pub const xml_shape = .{
-    .people = .{ .elements, "person", dishwasher.parse.Builder.Tree },
+    .people = .{ .elements, "person", dishwasher.parse.Tree },
   };
 
-  people: []dishwasher.parse.Builder.Tree,
+  people: []dishwasher.parse.Tree,
 };
 ```
 
