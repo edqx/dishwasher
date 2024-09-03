@@ -150,7 +150,7 @@ Often, it's useful to be able to populate a given struct with values from an XML
 document. That is, 'reading' the document into the struct.
 
 Dishwasher comes with a shaping API so you can dictate how the document should
-be read into the struct. Simple declare an `xml_shape` on the struct:
+be read into the struct. Simply declare an `xml_shape` on the struct:
 
 ```zig
 const Job = struct {
