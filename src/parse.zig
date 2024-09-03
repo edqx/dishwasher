@@ -703,7 +703,7 @@ pub fn parseFromSliceDiagnostics(allocator: std.mem.Allocator, slice: []const u8
     return fromSliceDiagnostics;
 }
 
-pub fn fromSlice(allocator: std.mem.Allocator, slice: []const u8) !.Tree.Owned {
+pub fn fromSlice(allocator: std.mem.Allocator, slice: []const u8) !Tree.Owned {
     return parseFromSliceImpl(allocator, slice, null);
 }
 
