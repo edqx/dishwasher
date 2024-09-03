@@ -299,3 +299,9 @@ while (try xmlScanner.next()) |token| {
 > const XmlFileReader = zigScanner.StaticBufferReader(@TypeOf(file.reader()), buffer_size);
 > const xmlReader = XmlFileReader.init(file.reader());
 > ```
+
+#### Comptime Scanner
+The scanner works during compile time without any modification.
+
+## License
+All dishwasher code is under the MIT license.
