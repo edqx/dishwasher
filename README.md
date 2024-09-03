@@ -226,6 +226,7 @@ const register = try dishwasher.Populate(Register).initFromTreeOwned(allocator, 
 // free 'register' values yourself..
 ```
 
+#### Dynamic values
 If some field accepts any sort of XML document shape, you can instruct it
 to accept a `parse.Tree`:
 
@@ -237,6 +238,16 @@ const Register = struct {
 
   people: []dishwasher.parse.Tree,
 };
+```
+
+> [!NOTE]
+> Note that this is not duplicated for you, so if you use the `initFromTreeOwned` method, the values in the tree
+> will still belong to the arena that was initialised for the tree.
+
+#### Free struct
+If you use the `initFromTreeOwned` population method, you can free all of the values in an arena-friendly way with:
+```zig
+dishwasher.Populate(Register).deinit(allocator, register);
 ```
 
 ### Comptime Parsing API
