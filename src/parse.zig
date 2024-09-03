@@ -60,49 +60,142 @@ pub const Diagnostics = struct {
     }
 };
 
-pub const Builder = struct {
-    pub const Tree = struct {
-        pub const Owned = struct {
-            arena: std.heap.ArenaAllocator,
-            tree: Tree,
+pub const Tree = struct {
+    pub const Owned = struct {
+        arena: std.heap.ArenaAllocator,
+        tree: Tree,
 
-            pub fn deinit(self: Owned) void {
-                self.arena.deinit();
+        pub fn deinit(self: Owned) void {
+            self.arena.deinit();
+        }
+    };
+
+    pub const Node = union(enum) {
+        pub const Elem = struct {
+            pub const Attr = struct {
+                name: []const u8,
+                value: ?[]const u8,
+            };
+
+            tag_name: []const u8,
+            attributes: []const Attr,
+            tree: ?Tree,
+
+            // Get an attribute given its name.
+            pub fn attributeByName(self: Elem, needle: []const u8) ?Attr {
+                return for (self.attributes) |attribute| {
+                    if (std.mem.eql(u8, attribute.name, needle)) {
+                        break attr;
+                    }
+                } else null;
+            }
+
+            // Alias for attributeByName
+            pub fn attr(self: Elem, needle: []const u8) ?Attr {
+                return self.attributeByName(needle);
+            }
+
+            // Get the value of an attribute given its name. Note that if the
+            // attribute has no value, e.g., <button disabled> this will
+            // still return null. Use attr or attributeByName in those
+            // cases.
+            pub fn attributeValueByName(self: Elem, needle: []const u8) ?[]const u8 {
+                return (self.attributeByName(needle) orelse return null).name;
+            }
+
+            // Alias for attributeValueByName
+            pub fn attrValue(self: Elem, needle: []const u8) ?[]const u8 {
+                return self.attributeValueByName(needle);
+            }
+
+            // Find an element child by its tag name
+            pub fn elementByTagName(self: Elem, needle: []const u8) ?Elem {
+                const tree = (self.tree orelse return null);
+                return for (tree.children) |child| {
+                    switch (child) {
+                        .elem => |elem_child| {
+                            if (std.mem.eql(u8, elem_child.tag_name, needle)) {
+                                break elem_child;
+                            }
+                        },
+                        else => {},
+                    }
+                } else null;
+            }
+
+            // Alias for elementByTagName
+            pub fn elem(self: Elem, needle: []const u8) ?Elem {
+                return self.elementByTagName(needle);
+            }
+
+            // Allocate a slice for all of the element children of a given tag name
+            pub fn elementsByTagName(self: Elem, allocator: std.mem.Allocator, needle: []const u8) ![]Elem {
+                const tree = (self.tree orelse return &.{});
+                var out = std.ArrayList(Elem).init(allocator);
+                errdefer out.deinit();
+
+                for (tree.children) |child| {
+                    switch (child) {
+                        .elem => |elem_child| {
+                            if (std.mem.eql(u8, elem_child.tag_name, needle)) {
+                                try out.append(elem_child);
+                            }
+                        },
+                        else => {},
+                    }
+                }
+
+                return out.toOwnedSlice();
+            }
+
+            // Alias for elementsByTagName
+            pub fn elems(self: Elem, allocator: std.mem.Allocator, needle: []const u8) ![]Elem {
+                return self.elementsByTagName(allocator, needle);
+            }
+
+            // Get an element by the value of one of its attributes
+            pub fn elementByAttributeValue(self: Elem, needle_name: []const u8, needle_value: []const u8) ?Elem {
+                const tree = (self.tree orelse return null);
+                return for (tree.children) |child| {
+                    switch (child) {
+                        .elem => |elem_child| {
+                            const attr_value = elem_child.attributeByName(needle_name) orelse continue;
+                            if (std.mem.eql(u8, attr_value, needle_value)) {
+                                break elem_child;
+                            }
+                        },
+                        else => {},
+                    }
+                } else null;
+            }
+
+            // Alias for elementByAttributeValue
+            pub fn elemByAttr(self: Elem, needle_name: []const u8, needle_value: []const u8) ?Elem {
+                return self.elementByAttributeValue(needle_name, needle_value);
             }
         };
 
-        pub const Node = union(enum) {
-            pub const Elem = struct {
-                pub const Attr = struct {
-                    name: []const u8,
-                    value: ?[]const u8,
-                };
+        pub const Text = struct {
+            contents: []const u8,
 
-                tag_name: []const u8,
-                attributes: []Attr,
-                tree: ?Tree,
-            };
-
-            pub const Text = struct {
-                contents: []const u8,
-
-                pub fn trimmed(self: Text) []const u8 {
-                    _ = self;
-                }
-            };
-
-            pub const Comment = struct {
-                contents: []const u8,
-            };
-
-            elem: Elem,
-            text: Text,
-            comment: Comment,
+            pub fn trimmed(self: Text) []const u8 {
+                _ = self;
+            }
         };
 
-        children: []Node,
+        pub const Comment = struct {
+            contents: []const u8,
+        };
+
+        elem: Elem,
+        text: Text,
+        comment: Comment,
     };
 
+    children: []const Node,
+};
+
+pub const Builder = struct {
     pub const State = union(enum) {
         const ElemTag = struct {
             open_token: Scanner.Token,
@@ -297,39 +390,6 @@ pub const Builder = struct {
 };
 
 pub const ComptimeBuilder = struct {
-    pub const Tree = struct {
-        pub const Node = union(enum) {
-            pub const Elem = struct {
-                pub const Attr = struct {
-                    name: []const u8,
-                    value: ?[]const u8,
-                };
-
-                tag_name: []const u8,
-                attributes: []const Attr,
-                tree: ?Tree,
-            };
-
-            pub const Text = struct {
-                contents: []const u8,
-
-                pub fn trimmed(self: Text) []const u8 {
-                    _ = self;
-                }
-            };
-
-            pub const Comment = struct {
-                contents: []const u8,
-            };
-
-            elem: Elem,
-            text: Text,
-            comment: Comment,
-        };
-
-        children: []const Node,
-    };
-
     pub const State = union(enum) {
         const ElemTag = struct {
             open_token: Scanner.Token,
