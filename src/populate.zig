@@ -474,10 +474,20 @@ fn PopulateShape(comptime T: type, comptime shape: anytype) type {
             return owned_tree.arena;
         }
 
+        pub fn fromSliceComptime(slice: []const u8, val: *T) !void {
+            const tree = comptime try parse.fromSliceComptime(slice);
+            fromTreeComptime(tree, val);
+        }
+
         pub fn initFromSlice(allocator: std.mem.Allocator, slice: []const u8) !OwnedDocument {
             var owned_tree = try parse.fromSlice(allocator, slice);
             const value = initFromTreeOwned(owned_tree.arena.allocator(), owned_tree.tree);
             return .{ .owned_tree = owned_tree, .value = value };
+        }
+
+        pub fn initFromSliceComptime(comptime slice: []const u8) T {
+            const tree = comptime parse.fromSliceComptime(slice);
+            return comptime initFromTreeComptime(tree);
         }
     };
 }

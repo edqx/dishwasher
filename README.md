@@ -35,7 +35,7 @@ Dishwasher has 4 APIs, 3 of which will be most useful.
 
 - [Parsing API](#parsing-api) - for parsing an entire XML document at runtime.
 - [Populate API](#populate-api) - for mapping an XML document to a given struct.
-- [Comptime Parsing API](#comptime-parsing-api) - for parsing an entire XML document at compile time.
+- [Comptime Parsing and Populate API](#comptime-parsing-and-populate-api) - for parsing an entire XML document at compile time.
 - [Scanner API](#scanner-api) - for iterating through XML symbols from a slice or reader.
 
 ### Parsing API
@@ -241,7 +241,7 @@ const Register = struct {
 ```
 
 > [!NOTE]
-> Note that this is not duplicated for you, so if you use the `initFromTreeOwned` method, the values in the tree
+> Note that the tree is not duplicated for you, so if you use the `initFromTreeOwned` method, the values in the tree
 > will still belong to the arena that was initialised for the tree.
 
 #### Free struct
@@ -250,16 +250,23 @@ If you use the `initFromTreeOwned` population method, you can free all of the va
 dishwasher.Populate(Register).deinit(allocator, register);
 ```
 
-### Comptime Parsing API
+### Comptime Parsing and Populate API
 It could be useful to parse an XML document at compile time, for example
 for some inline code generation. While comptime doesn't have allocators,
 there's a custom API for this:
 
-```ts
+```zig
 const tree = dishwasher.parse.fromSliceComptime(xml_text);
 ```
 
 Check out the [Tree API](#tree-api) to know what to do with the returned value.
+
+#### Comptime Populate API
+If you want to populate a struct at compile time, you can use the `*Comptime` methods
+on the `Populate` struct:
+```zig
+const register = dishwasher.Populate(Register).initFromSliceComptime(xml_text);
+```
 
 ### Scanner API
 If you want low-level access to the iterator for lexing an XML document,
