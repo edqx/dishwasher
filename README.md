@@ -268,6 +268,10 @@ on the `Populate` struct:
 const register = dishwasher.Populate(Register).initFromSliceComptime(xml_text);
 ```
 
+> [!NOTE]
+> Remember that for the target struct, all pointers need to be `*const T` or
+> `[]const T`.
+
 ### Scanner API
 If you want low-level access to the iterator for lexing an XML document,
 you can use the Scanner API, which accepts a slice buffer:
