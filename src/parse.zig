@@ -81,6 +81,20 @@ pub const Tree = struct {
             attributes: []const Attr,
             tree: ?Tree,
 
+            pub fn freeRecursive(self: Elem, allocator: std.mem.Allocator) void {
+                if (self.tree) |tree| tree.freeRecursive(allocator);
+                var i = self.attributes.len;
+                while (i > 0) {
+                    i -= 1;
+                    if (self.attributes[i].value) |value| {
+                        allocator.free(value);
+                    }
+                    allocator.free(self.attributes[i].name);
+                }
+                allocator.free(self.attributes);
+                allocator.free(self.tag_name);
+            }
+
             // Get an attribute given its name.
             pub fn attributeByName(self: Elem, needle: []const u8) ?Attr {
                 return for (self.attributes) |attribute| {
@@ -112,6 +126,10 @@ pub const Tree = struct {
         pub const Text = struct {
             contents: []const u8,
 
+            pub fn freeRecursive(self: Text, allocator: std.mem.Allocator) void {
+                allocator.free(self.contents);
+            }
+
             // Return the text without any whitespace at the beginning or end.
             pub fn trimmed(self: Text) []const u8 {
                 return std.mem.trim(u8, self.contents, &std.ascii.whitespace);
@@ -120,14 +138,33 @@ pub const Tree = struct {
 
         pub const Comment = struct {
             contents: []const u8,
+
+            pub fn freeRecursive(self: Comment, allocator: std.mem.Allocator) void {
+                allocator.free(self.contents);
+            }
         };
 
         elem: Elem,
         text: Text,
         comment: Comment,
+
+        pub fn freeRecursive(self: Node, allocator: std.mem.Allocator) void {
+            switch (self) {
+                inline else => |node| node.freeRecursive(allocator),
+            }
+        }
     };
 
     children: []const Node,
+
+    pub fn freeRecursive(self: Tree, allocator: std.mem.Allocator) void {
+        var i = self.children.len;
+        while (i > 0) {
+            i -= 1;
+            self.children[i].freeRecursive(allocator);
+        }
+        allocator.free(self.children);
+    }
 
     // Find an element child by its tag name
     pub fn elementByTagName(self: Tree, needle: []const u8) ?Node.Elem {
@@ -349,7 +386,10 @@ pub fn StateMachine(comptime Builder: type) type {
                 try self.builder.popStack();
             }
 
-            return .{ .children = try self.builder.getOwnedChildren() };
+            const root_children = try self.builder.getOwnedChildren();
+            try self.builder.popStack();
+
+            return .{ .children = root_children };
         }
     };
 }
@@ -392,11 +432,25 @@ pub const RuntimeBuilder = struct {
     }
 
     pub fn deinit(self: *RuntimeBuilder) void {
-        self.stack.deinit();
         if (self.attributes) |*attr| {
             attr.deinit();
             self.attributes = null;
         }
+        var i = self.stack.items.len;
+        while (i > 0) {
+            i -= 1;
+            const temp_tree = &self.stack.items[i];
+            var j = temp_tree.children.items.len;
+            while (j > 0) {
+                j -= 1;
+                var child_node = &temp_tree.children.items[j];
+                child_node.freeRecursive(self.data_allocator);
+            }
+            if (temp_tree.maybe_open_token) |open_token| {
+                self.data_allocator.free(open_token.inner);
+            }
+        }
+        self.stack.deinit();
     }
 
     fn reportDefectOrExit(self: *RuntimeBuilder, defectKind: Diagnostics.Defect.Kind, tokens: []const Scanner.Token) !void {
@@ -476,11 +530,10 @@ pub const RuntimeBuilder = struct {
             const last_node = &last.children.items[last.children.items.len - 1];
             switch (last_node.*) {
                 inline .text, .comment => |*text_node| {
-                    const previous_contents = text_node.contents;
-                    defer self.data_allocator.free(previous_contents);
                     const concat = try self.data_allocator.alloc(u8, text_node.contents.len + text_content.len);
                     @memcpy(concat[0..text_node.contents.len], text_node.contents);
                     @memcpy(concat[text_node.contents.len..], text_content);
+                    self.data_allocator.free(text_node.contents);
                     text_node.contents = concat;
                     return;
                 },
@@ -499,8 +552,9 @@ pub const RuntimeBuilder = struct {
 
     pub fn getAttributesOwned(self: *RuntimeBuilder) ![]const Tree.Node.Elem.Attr {
         std.debug.assert(self.attributes != null);
-        defer self.attributes = null;
-        return self.attributes.?.toOwnedSlice();
+        const owned = try self.attributes.?.toOwnedSlice();
+        self.attributes = null;
+        return owned;
     }
 
     pub fn appendAttribute(self: *RuntimeBuilder, attr_name: []const u8) !void {
@@ -691,60 +745,127 @@ pub const ComptimeBuilder = struct {
     }
 };
 
-fn parseFromSliceImpl(allocator: std.mem.Allocator, slice: []const u8, maybe_diagnostics: ?*Diagnostics) !Tree.Owned {
-    var arena = std.heap.ArenaAllocator.init(allocator);
-    errdefer arena.deinit();
-
-    var scanner = Scanner.fromSlice(slice);
-    var builder = try RuntimeBuilder.init(allocator, arena.allocator(), maybe_diagnostics);
+fn fromScannerImpl(
+    temp_allocator: std.mem.Allocator,
+    data_allocator: std.mem.Allocator,
+    scanner_or_reader: anytype,
+    maybe_diagnostics: ?*Diagnostics,
+) !Tree {
+    var builder = try RuntimeBuilder.init(temp_allocator, data_allocator, maybe_diagnostics);
     defer builder.deinit();
 
     var state = stateMachine(&builder);
-    while (try scanner.next()) |token| {
+    while (try scanner_or_reader.next()) |token| {
         try state.feedToken(token);
     }
 
+    return try state.finalise();
+}
+
+fn fromSliceImpl(
+    temp_allocator: std.mem.Allocator,
+    data_allocator: std.mem.Allocator,
+    slice: []const u8,
+    maybe_diagnostics: ?*Diagnostics,
+) !Tree {
+    var xml_scanner = Scanner.fromSlice(slice);
+    return fromScannerImpl(temp_allocator, data_allocator, &xml_scanner, maybe_diagnostics);
+}
+
+fn fromSliceArenaImpl(
+    allocator: std.mem.Allocator,
+    slice: []const u8,
+    maybe_diagnostics: ?*Diagnostics,
+) !Tree.Owned {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    errdefer arena.deinit();
+
+    const tree = try fromSliceImpl(allocator, arena.allocator(), slice, maybe_diagnostics);
+
     return .{
         .arena = arena,
-        .tree = try state.finalise(),
+        .tree = tree,
     };
 }
 
-pub fn parseFromSliceDiagnostics(allocator: std.mem.Allocator, slice: []const u8, diagnostics: *Diagnostics) !Tree.Owned {
-    const fromSliceDiagnostics = try parseFromSliceImpl(allocator, slice, diagnostics);
-    return fromSliceDiagnostics;
+pub fn fromSliceDiagnosticsOwned(
+    allocator: std.mem.Allocator,
+    slice: []const u8,
+    diagnostics: *Diagnostics,
+) !Tree.Owned {
+    return try fromSliceImpl(allocator, allocator, slice, diagnostics);
+}
+
+pub fn fromSliceDiagnostics(
+    allocator: std.mem.Allocator,
+    slice: []const u8,
+    diagnostics: *Diagnostics,
+) !Tree.Owned {
+    return try fromSliceArenaImpl(allocator, slice, diagnostics);
+}
+
+pub fn fromSliceOwned(allocator: std.mem.Allocator, slice: []const u8) !Tree {
+    return try fromSliceImpl(allocator, allocator, slice, null);
 }
 
 pub fn fromSlice(allocator: std.mem.Allocator, slice: []const u8) !Tree.Owned {
-    return parseFromSliceImpl(allocator, slice, null);
-}
-
-fn fromReaderImpl(allocator: std.mem.Allocator, reader: anytype, maybe_diagnostics: ?*Diagnostics) !Tree.Owned {
     var arena = std.heap.ArenaAllocator.init(allocator);
     errdefer arena.deinit();
 
-    var xmlReader = Scanner.staticBufferReader(reader);
-    var builder = try RuntimeBuilder.init(allocator, arena.allocator(), maybe_diagnostics);
-    defer builder.deinit();
+    return fromSliceArenaImpl(allocator, slice, null);
+}
 
-    var state = stateMachine(&builder);
-    while (try xmlReader.next()) |token| {
-        try state.feedToken(token);
-    }
+fn fromReaderImpl(
+    temp_allocator: std.mem.Allocator,
+    data_allocator: std.mem.Allocator,
+    reader: anytype,
+    maybe_diagnostics: ?*Diagnostics,
+) !Tree {
+    var xml_scanner = Scanner.staticBufferReader(reader);
+    return fromScannerImpl(temp_allocator, data_allocator, &xml_scanner, maybe_diagnostics);
+}
+
+fn fromReaderArenaImpl(
+    allocator: std.mem.Allocator,
+    reader: anytype,
+    maybe_diagnostics: ?*Diagnostics,
+) !Tree.Owned {
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    errdefer arena.deinit();
+
+    const tree = try fromReaderImpl(allocator, arena.allocator(), reader, maybe_diagnostics);
 
     return .{
         .arena = arena,
-        .tree = try state.finalise(),
+        .tree = tree,
     };
 }
 
-pub fn fromReaderDiagnostics(allocator: std.mem.Allocator, reader: anytype, diagnostics: *Diagnostics) !Tree.Owned {
-    const result = try fromReaderImpl(allocator, reader, diagnostics);
-    return result;
+pub fn fromReaderDiagnosticsOwned(
+    allocator: std.mem.Allocator,
+    reader: anytype,
+    diagnostics: *Diagnostics,
+) !Tree.Owned {
+    return try fromReaderImpl(allocator, allocator, reader, diagnostics);
+}
+
+pub fn fromReaderDiagnostics(
+    allocator: std.mem.Allocator,
+    reader: anytype,
+    diagnostics: *Diagnostics,
+) !Tree.Owned {
+    return try fromReaderArenaImpl(allocator, reader, diagnostics);
+}
+
+pub fn fromReaderOwned(allocator: std.mem.Allocator, reader: anytype) !Tree {
+    return try fromReaderImpl(allocator, allocator, reader, null);
 }
 
 pub fn fromReader(allocator: std.mem.Allocator, reader: anytype) !Tree.Owned {
-    return fromReaderImpl(allocator, reader, null);
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    errdefer arena.deinit();
+
+    return fromReaderArenaImpl(allocator, reader, null);
 }
 
 pub fn fromSliceComptime(comptime slice: []const u8) Tree {
@@ -800,6 +921,15 @@ test fromReader {
     defer parsed.deinit();
 
     try expectTestTreeValid(parsed.tree);
+}
+
+test fromReaderOwned {
+    var fba = std.io.fixedBufferStream(test_buf);
+
+    const tree = try fromReaderOwned(std.testing.allocator, fba.reader());
+    defer tree.freeRecursive(std.testing.allocator);
+
+    try expectTestTreeValid(tree);
 }
 
 test fromReaderDiagnostics {
