@@ -635,10 +635,11 @@ pub const ComptimeBuilder = struct {
     pub fn addNode(self: *ComptimeBuilder, node: Tree.Node) !void {
         std.debug.assert(self.stack.len > 0);
         const last = self.stack[self.stack.len - 1];
+        const temp_children: []const Tree.Node = if (last.children.len == 0) &.{} else last.children;
         self.stack = self.stack[0 .. self.stack.len - 1] ++ .{
             .{
                 .maybe_open_token = last.maybe_open_token,
-                .children = last.children[0..last.children.len] ++ .{node},
+                .children = temp_children ++ .{node},
             },
         };
     }
@@ -664,9 +665,10 @@ pub const ComptimeBuilder = struct {
     pub fn addComment(self: *ComptimeBuilder) !void {
         std.debug.assert(self.stack.len > 0);
         const last = self.stack[self.stack.len - 1];
+        const temp_children: []const Tree.Node = if (last.children.len == 0) &.{} else last.children;
         self.stack = self.stack[0 .. self.stack.len - 1] ++ .{.{
             .maybe_open_token = last.maybe_open_token,
-            .children = last.children[0..last.children.len] ++ .{.{
+            .children = temp_children ++ .{.{
                 .comment = .{ .contents = &.{} },
             }},
         }};
@@ -676,10 +678,11 @@ pub const ComptimeBuilder = struct {
         std.debug.assert(self.stack.len > 0);
         const last = self.stack[self.stack.len - 1];
         std.debug.assert(last.children.len > 0);
+        const temp_children: []const Tree.Node = if (last.children.len == 0) &.{} else last.children;
         std.debug.assert(last.children[last.children.len - 1] == .comment);
         self.stack = self.stack[0 .. self.stack.len - 1] ++ .{.{
             .maybe_open_token = last.maybe_open_token,
-            .children = last.children[0..last.children.len] ++ .{.{
+            .children = temp_children ++ .{.{
                 .text = .{ .contents = &.{} },
             }},
         }};
