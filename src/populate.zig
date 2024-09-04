@@ -23,6 +23,7 @@ fn PopulateShape(comptime T: type, comptime shape: anytype) type {
     const shape_type_info = @typeInfo(ShapeType);
 
     const shape_print = std.fmt.comptimePrint("{}", .{shape});
+    const cannot_be_applied = "Shape " ++ shape_print ++ " cannot be applied to type " ++ @typeName(T);
 
     return struct {
         pub const OwnedDocument = struct {
@@ -124,7 +125,7 @@ fn PopulateShape(comptime T: type, comptime shape: anytype) type {
                 .type => {
                     if (shape == Tree) {
                         if (T != Tree) {
-                            @compileError("Shape " ++ @typeName(Tree) ++ " cannot be applied to type " ++ @typeName(T) ++ ", must be the Tree type");
+                            @compileError(cannot_be_applied ++ ", must be the Tree type");
                         }
                         val.* = tree;
                         return;
@@ -133,6 +134,9 @@ fn PopulateShape(comptime T: type, comptime shape: anytype) type {
                         const child_type = dest_type_info.pointer.child;
                         switch (mode) {
                             .compile_time => {
+                                if (!dest_type_info.pointer.is_const) {
+                                    @compileError(cannot_be_applied ++ ", must be a const pointer when populating at compile time");
+                                }
                                 val.* = &try Populate(shape).initFromTreeImpl(
                                     mode,
                                     allocator,
@@ -157,7 +161,7 @@ fn PopulateShape(comptime T: type, comptime shape: anytype) type {
                         return;
                     }
                     if (T != shape) {
-                        @compileError("Shape " ++ shape_print ++ " cannot be applied to type " ++ @typeName(T));
+                        @compileError(cannot_be_applied);
                     }
                     val.* = try Populate(shape).initFromTreeImpl(
                         mode,
@@ -170,7 +174,7 @@ fn PopulateShape(comptime T: type, comptime shape: anytype) type {
                     if (struct_info.is_tuple) {
                         if (struct_info.fields.len == 2 and shape[0] == .attribute) {
                             if (T != []const u8 and T != []u8) {
-                                @compileError("Shape " ++ shape_print ++ " cannot be applied to type " ++ @typeName(T) ++ ", must be a string type");
+                                @compileError(cannot_be_applied ++ ", must be a string type");
                             }
 
                             val.* = for (attributes) |attribute| {
@@ -184,7 +188,7 @@ fn PopulateShape(comptime T: type, comptime shape: anytype) type {
                             } else return ContentError.MissingAttribute;
                         } else if (struct_info.fields.len == 2 and shape[0] == .attribute_exists) {
                             if (T != bool) {
-                                @compileError("Shape " ++ shape_print ++ " cannot be applied to type " ++ @typeName(T) ++ ", must be a boolean type");
+                                @compileError(cannot_be_applied ++ ", must be a boolean type");
                             }
 
                             val.* = for (attributes) |attribute| {
@@ -194,7 +198,7 @@ fn PopulateShape(comptime T: type, comptime shape: anytype) type {
                             } else if (T == bool) false;
                         } else if (struct_info.fields.len == 2 and shape[0] == .maybe) {
                             if (dest_type_info != .optional) {
-                                @compileError("Shape " ++ shape_print ++ " cannot be applied to type " ++ @typeName(T) ++ ", must be optional");
+                                @compileError(cannot_be_applied ++ ", must be optional");
                             }
 
                             const ChildType = dest_type_info.optional.child;
@@ -217,7 +221,7 @@ fn PopulateShape(comptime T: type, comptime shape: anytype) type {
                             };
                         } else if (struct_info.fields.len == 3 and shape[0] == .elements) {
                             if (dest_type_info != .pointer or dest_type_info.pointer.size != .Slice) {
-                                @compileError("Shape " ++ shape_print ++ " cannot be applied to type " ++ @typeName(T) ++ ", must be a slice type");
+                                @compileError(cannot_be_applied ++ ", must be a slice type");
                             }
 
                             const ChildType = dest_type_info.pointer.child;
@@ -227,6 +231,10 @@ fn PopulateShape(comptime T: type, comptime shape: anytype) type {
 
                             switch (mode) {
                                 .compile_time => {
+                                    if (!dest_type_info.pointer.is_const) {
+                                        @compileError(cannot_be_applied ++ ", must be a const slice when populating at compile time");
+                                    }
+
                                     var result: []const ChildType = &.{};
 
                                     for (tree.children) |child| {
@@ -298,14 +306,14 @@ fn PopulateShape(comptime T: type, comptime shape: anytype) type {
                             );
                         } else if (struct_info.fields.len > 2 and shape[0] == .one_of) {
                             if (dest_type_info != .@"union") {
-                                @compileError("Shape " ++ shape_print ++ " cannot be applied to type " ++ @typeName(T) ++ ", must be a union type");
+                                @compileError(cannot_be_applied ++ ", must be a union type");
                             }
 
                             const union_fields = dest_type_info.@"union".fields;
                             const num_child_shapes = struct_info.fields.len - 1;
 
                             if (union_fields.len != num_child_shapes) {
-                                @compileError("Shape " ++ shape_print ++ " cannot be applied to type " ++ @typeName(T) ++ ", mismatched number of branches");
+                                @compileError(cannot_be_applied ++ ", mismatched number of branches");
                             }
 
                             val.* = inline for (union_fields, 0..num_child_shapes) |field, i| {
@@ -313,7 +321,7 @@ fn PopulateShape(comptime T: type, comptime shape: anytype) type {
                                 const child_shape_type_info = @typeInfo(@TypeOf(child_shape));
                                 if (child_shape_type_info == .enum_literal and child_shape == .none) {
                                     if (field.type != void) {
-                                        @compileError("Shape " ++ shape_print ++ " cannot be applied to type " ++ @typeName(T) ++ ", must be null");
+                                        @compileError(cannot_be_applied ++ ", must be null");
                                     }
                                     break @unionInit(T, field.name, {});
                                 }
@@ -341,7 +349,7 @@ fn PopulateShape(comptime T: type, comptime shape: anytype) type {
                         }
                     } else {
                         if (dest_type_info != .@"struct") {
-                            @compileError("Shape " ++ shape_print ++ " cannot be applied to type " ++ @typeName(T) ++ ", must be a struct type");
+                            @compileError(cannot_be_applied ++ ", must be a struct type");
                         }
 
                         const struct_fields = dest_type_info.@"struct".fields;
@@ -383,7 +391,7 @@ fn PopulateShape(comptime T: type, comptime shape: anytype) type {
                                 if (std.mem.eql(u8, field.name, shape_field.name)) {
                                     break field;
                                 }
-                            } else @compileError("Missing field '" ++ shape_field.name ++ "' on base type " ++ @typeName(T));
+                            } else @compileError(cannot_be_applied ++ ", missing field '" ++ shape_field.name);
 
                             const shape_field_val = @field(shape, shape_field.name);
                             @field(val.*, base_field.name) = try PopulateShape(base_field.type, shape_field_val)
@@ -394,7 +402,7 @@ fn PopulateShape(comptime T: type, comptime shape: anytype) type {
                 .enum_literal => {
                     if (shape == .content or shape == .content_trimmed) {
                         if (T != []const u8 and T != []u8) {
-                            @compileError("Shape " ++ shape_print ++ " cannot be applied to type " ++ @typeName(T) ++ ", must be a string type");
+                            @compileError(cannot_be_applied ++ ", must be a string type");
                         }
 
                         switch (mode) {
