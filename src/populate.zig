@@ -628,7 +628,7 @@ test Populate {
 }
 
 test "comptime populate" {
-    @setEvalBranchQuota(4096);
+    @setEvalBranchQuota(8192);
     const tree = comptime parse.fromSliceComptime(test_buf);
     const document: Document = comptime Populate(Document).initFromTreeComptime(tree);
 
