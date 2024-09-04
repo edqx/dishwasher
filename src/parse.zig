@@ -873,6 +873,8 @@ pub fn fromReader(allocator: std.mem.Allocator, reader: anytype) !Tree.Owned {
 
 pub fn fromSliceComptime(comptime slice: []const u8) Tree {
     return comptime blk: {
+        @setEvalBranchQuota(slice.len * 8); // should be a good upper-limit
+
         var scanner = Scanner.fromSlice(slice);
         var builder = ComptimeBuilder{};
         var state = stateMachine(&builder);
