@@ -16,16 +16,16 @@ work with most well-formed xml documents.
 
 ### Benchmarks
 
-Here are the results from the given benchmarks on my laptop in different
+Here are the results from the given benchmarks on my pc (i9-14900kf) in different
 optimisation modes, when parsing the [OpenGL XML Spec document](https://github.com/KhronosGroup/OpenGL-Registry/blob/main/xml/gl.xml)
 fully.
 
 | Mode | Min | Max | Avg |
 |------|-----|-----|-----|
-| `Debug` | `240ms` | `290ms` | `260ms` |
-| `ReleaseSafe` | `31ms` | `44ms` | `34ms` | 
-| `ReleaseSmall` | `39ms` | `49ms` | `43ms` |
-| `ReleaseFast` | `17ms` | `25ms` | `20ms` |
+| `Debug` | `100ms` | `280ms` | `131ms` |
+| `ReleaseSafe` | `13ms` | `25ms` | `15ms` | 
+| `ReleaseSmall` | `18ms` | `50ms` | `30ms` |
+| `ReleaseFast` | `7ms` | `27ms` | `13ms` |
 
 _All times are averaged over 100 runs, rounded to the nearest 2sf._
 
