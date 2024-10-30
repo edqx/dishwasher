@@ -474,7 +474,7 @@ pub fn StaticBufferReader(comptime ReaderType: type, comptime bufferSize: usize)
         fn refillBuffer(self: *_Reader) !void {
             const remaining = self.scanner.buffer.len - self.scanner.cursor;
             std.mem.copyForwards(u8, self.buffer[0..remaining], self.buffer[self.scanner.cursor .. self.scanner.cursor + remaining]);
-            const bytesRead = try self.reader.read(self.buffer[remaining..]);
+            const bytesRead = try self.reader.readAll(self.buffer[remaining..]);
             self.scanner.buffer = self.buffer[0 .. remaining + bytesRead];
             self.scanner.cursor = 0;
             self.scanner.end_of_input = bytesRead != bufferSize - remaining;

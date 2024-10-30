@@ -7,9 +7,12 @@ pub fn main() !void {
     var times = std.ArrayList(usize).init(gpa.allocator());
     defer times.deinit();
 
+    const fileData = try std.fs.cwd().readFileAlloc(gpa.allocator(), "./src/mega.xml", 1024 * 1024 * 200);
+    defer gpa.allocator().free(fileData);
+
     for (0..100) |_| {
         const us1 = std.time.microTimestamp();
-        var ownedDocument = try dishwasher.parse.fromSlice(gpa.allocator(), @embedFile("./gl.xml"));
+        var ownedDocument = try dishwasher.parse.fromSlice(gpa.allocator(), fileData);
         defer ownedDocument.deinit();
         const us2 = std.time.microTimestamp();
         try times.append(@intCast(@divFloor(us2 - us1, 1000)));

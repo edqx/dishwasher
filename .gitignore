@@ -1,2 +1,4 @@
 .zig-cache
 zig-out
+
+benchmarks/dishwasher/src/mega.xml
