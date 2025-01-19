@@ -41,7 +41,7 @@ fn PopulateShape(comptime T: type, comptime shape: anytype) type {
                     if (shape == Tree) {
                         return;
                     }
-                    if (dest_type_info == .pointer and dest_type_info.pointer.size == .One) {
+                    if (dest_type_info == .pointer and dest_type_info.pointer.size == .one) {
                         Populate(shape).deinit(allocator, val.*);
                         allocator.destroy(val);
                         return;
@@ -130,7 +130,7 @@ fn PopulateShape(comptime T: type, comptime shape: anytype) type {
                         val.* = tree;
                         return;
                     }
-                    if (dest_type_info == .pointer and dest_type_info.pointer.size == .One) {
+                    if (dest_type_info == .pointer and dest_type_info.pointer.size == .one) {
                         const child_type = dest_type_info.pointer.child;
                         switch (mode) {
                             .compile_time => {
@@ -220,7 +220,7 @@ fn PopulateShape(comptime T: type, comptime shape: anytype) type {
                                 else => return e,
                             };
                         } else if (struct_info.fields.len == 3 and shape[0] == .elements) {
-                            if (dest_type_info != .pointer or dest_type_info.pointer.size != .Slice) {
+                            if (dest_type_info != .pointer or dest_type_info.pointer.size != .slice) {
                                 @compileError(cannot_be_applied ++ ", must be a slice type");
                             }
 
