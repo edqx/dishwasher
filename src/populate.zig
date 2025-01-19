@@ -437,8 +437,8 @@ fn PopulateShape(comptime T: type, comptime shape: anytype) type {
             switch (dest_type_info) {
                 .@"struct" => |structInfo| {
                     inline for (structInfo.fields) |field| {
-                        if (field.default_value) |default_value| {
-                            @field(val, field.name) = @as(*field.type, @alignCast(@ptrCast(default_value))).*;
+                        if (field.default_value_ptr) |default_value| {
+                            @field(val, field.name) = @as(*field.type, @constCast(@alignCast(@ptrCast(default_value)))).*;
                         }
                     }
                 },

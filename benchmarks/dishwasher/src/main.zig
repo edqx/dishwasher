@@ -7,7 +7,7 @@ pub fn main() !void {
     var times = std.ArrayList(usize).init(gpa.allocator());
     defer times.deinit();
 
-    const fileData = try std.fs.cwd().readFileAlloc(gpa.allocator(), "./src/mega.xml", 1024 * 1024 * 200);
+    const fileData = try std.fs.cwd().readFileAlloc(gpa.allocator(), "./src/gl.xml", 1024 * 1024 * 200);
     defer gpa.allocator().free(fileData);
 
     for (0..100) |_| {
