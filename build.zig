@@ -10,12 +10,8 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    _ = exe;
-
     const exe_unit_tests = b.addTest(.{
-        .root_source_file = b.path("src/dishwasher.zig"),
-        .target = target,
-        .optimize = optimize,
+        .root_module = exe,
     });
 
     const run_exe_unit_tests = b.addRunArtifact(exe_unit_tests);

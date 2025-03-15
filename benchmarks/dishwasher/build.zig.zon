@@ -1,6 +1,7 @@
 .{
-    .name = "benchmarks-dishwasher",
+    .name = .benchmarks_dishwasher,
     .version = "0.0.0",
+    .fingerprint = 0xadb94a6b532fc55c,
     .dependencies = .{ .dishwasher = .{ .path = "../.." } },
     .paths = .{ "build.zig", "build.zig.zon", "src" },
 }

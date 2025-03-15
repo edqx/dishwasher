@@ -621,7 +621,7 @@ pub const ComptimeBuilder = struct {
     }
 
     pub fn pushStack(self: *ComptimeBuilder, open_token: Scanner.Token) !void {
-        self.stack = self.stack ++ .{.{
+        self.stack = self.stack ++ .{ComptimeBuilder.TempTree{
             .maybe_open_token = open_token,
             .children = &.{},
         }};
@@ -637,7 +637,7 @@ pub const ComptimeBuilder = struct {
         const last = self.stack[self.stack.len - 1];
         const temp_children: []const Tree.Node = if (last.children.len == 0) &.{} else last.children;
         self.stack = self.stack[0 .. self.stack.len - 1] ++ .{
-            .{
+            ComptimeBuilder.TempTree{
                 .maybe_open_token = last.maybe_open_token,
                 .children = temp_children ++ .{node},
             },
@@ -650,10 +650,10 @@ pub const ComptimeBuilder = struct {
         const last_child = last.children[last.children.len - 1];
         std.debug.assert(last_child == .elem);
         std.debug.assert(last_child.elem.tree == null);
-        self.stack = self.stack[0 .. self.stack.len - 1] ++ .{.{
+        self.stack = self.stack[0 .. self.stack.len - 1] ++ .{ComptimeBuilder.TempTree{
             .maybe_open_token = last.maybe_open_token,
             .children = last.children[0 .. last.children.len - 1] ++ .{
-                .{ .elem = .{
+                Tree.Node{ .elem = .{
                     .tag_name = last_child.elem.tag_name,
                     .attributes = last_child.elem.attributes,
                     .tree = tree,
@@ -666,9 +666,9 @@ pub const ComptimeBuilder = struct {
         std.debug.assert(self.stack.len > 0);
         const last = self.stack[self.stack.len - 1];
         const temp_children: []const Tree.Node = if (last.children.len == 0) &.{} else last.children;
-        self.stack = self.stack[0 .. self.stack.len - 1] ++ .{.{
+        self.stack = self.stack[0 .. self.stack.len - 1] ++ .{ComptimeBuilder.TempTree{
             .maybe_open_token = last.maybe_open_token,
-            .children = temp_children ++ .{.{
+            .children = temp_children ++ .{Tree.Node{
                 .comment = .{ .contents = &.{} },
             }},
         }};
@@ -680,9 +680,9 @@ pub const ComptimeBuilder = struct {
         std.debug.assert(last.children.len > 0);
         const temp_children: []const Tree.Node = if (last.children.len == 0) &.{} else last.children;
         std.debug.assert(last.children[last.children.len - 1] == .comment);
-        self.stack = self.stack[0 .. self.stack.len - 1] ++ .{.{
+        self.stack = self.stack[0 .. self.stack.len - 1] ++ .{ComptimeBuilder.TempTree{
             .maybe_open_token = last.maybe_open_token,
-            .children = temp_children ++ .{.{
+            .children = temp_children ++ .{Tree.Node{
                 .text = .{ .contents = &.{} },
             }},
         }};
@@ -697,12 +697,12 @@ pub const ComptimeBuilder = struct {
                 inline .text, .comment => |text_node, tag| {
                     const previous_contents: []const u8 = if (text_node.contents.len > 0) text_node.contents else &.{};
                     const contents = previous_contents ++ text_content;
-                    self.stack = self.stack[0 .. self.stack.len - 1] ++ .{.{
+                    self.stack = self.stack[0 .. self.stack.len - 1] ++ .{ComptimeBuilder.TempTree{
                         .maybe_open_token = last.maybe_open_token,
                         .children = last.children[0 .. last.children.len - 1] ++ .{
                             switch (tag) {
-                                .text => .{ .text = .{ .contents = contents } },
-                                .comment => .{ .comment = .{ .contents = contents } },
+                                .text => Tree.Node{ .text = .{ .contents = contents } },
+                                .comment => Tree.Node{ .comment = .{ .contents = contents } },
                                 else => unreachable,
                             },
                         },
@@ -714,9 +714,9 @@ pub const ComptimeBuilder = struct {
         }
 
         const temp_children: []const Tree.Node = if (last.children.len > 0) last.children else &.{};
-        self.stack = self.stack[0 .. self.stack.len - 1] ++ .{.{
+        self.stack = self.stack[0 .. self.stack.len - 1] ++ .{ComptimeBuilder.TempTree{
             .maybe_open_token = last.maybe_open_token,
-            .children = temp_children ++ .{.{
+            .children = temp_children ++ .{Tree.Node{
                 .text = .{ .contents = text_content },
             }},
         }};
@@ -730,7 +730,7 @@ pub const ComptimeBuilder = struct {
 
     pub fn appendAttribute(self: *ComptimeBuilder, attr_name: []const u8) !void {
         std.debug.assert(self.attributes != null);
-        self.attributes = self.attributes.? ++ .{.{
+        self.attributes = self.attributes.? ++ .{Tree.Node.Elem.Attr{
             .name = attr_name,
             .value = null,
         }};
@@ -741,7 +741,7 @@ pub const ComptimeBuilder = struct {
         std.debug.assert(self.attributes.?.len > 0);
 
         const last_attr = self.attributes.?[self.attributes.?.len - 1];
-        self.attributes = self.attributes.?[0 .. self.attributes.?.len - 1] ++ .{.{
+        self.attributes = self.attributes.?[0 .. self.attributes.?.len - 1] ++ .{Tree.Node.Elem.Attr{
             .name = last_attr.name,
             .value = attr_value,
         }};
