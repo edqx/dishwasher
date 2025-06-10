@@ -111,7 +111,7 @@ pub const Tree = struct {
 
             // Get the value of an attribute given its name. Note that if the
             // attribute has no value, e.g., <button disabled> this will
-            // still return null. Use attr or attributeByName in those
+            // still return null. Use attr or attrValue in those
             // cases.
             pub fn attributeValueByName(self: Elem, needle: []const u8) ?[]const u8 {
                 return (self.attributeByName(needle) orelse return null).value;
@@ -119,7 +119,7 @@ pub const Tree = struct {
 
             // Alias for attributeValueByName
             pub fn attrValue(self: Elem, needle: []const u8) ?[]const u8 {
-                return try self.attributeValueByName(needle);
+                return self.attributeValueByName(needle);
             }
         };
 
@@ -182,7 +182,7 @@ pub const Tree = struct {
 
     // Alias for elementByTagName
     pub fn elem(self: Tree, needle: []const u8) ?Node.Elem {
-        return try self.elementByTagName(needle);
+        return self.elementByTagName(needle);
     }
 
     // Allocate a slice for all of the element children of a given tag name
@@ -228,7 +228,7 @@ pub const Tree = struct {
 
     // Alias for elementByAttributeValue
     pub fn elemByAttr(self: Tree, needle_name: []const u8, needle_value: []const u8) ?Node.Elem {
-        return try self.elementByAttributeValue(needle_name, needle_value);
+        return self.elementByAttributeValue(needle_name, needle_value);
     }
 
     // Return the inner text (not including the elements) of the tree. Note that the
@@ -985,18 +985,29 @@ test Tree {
     };
 
     const jonas = tree.elementByTagName("person");
+    const jonas_alias = tree.elem("person");
     const kyle = tree.elementByAttributeValue("name", "Kyle");
+    const kyle_alias = tree.elemByAttr("name", "Kyle");
 
     try std.testing.expect(jonas != null);
+    try std.testing.expect(jonas_alias != null);
     try std.testing.expect(kyle != null);
+    try std.testing.expect(kyle_alias != null);
     try std.testing.expectEqualSlices(u8, "person", jonas.?.tag_name);
+    try std.testing.expectEqualSlices(u8, "person", jonas_alias.?.tag_name);
     try std.testing.expectEqualSlices(u8, "person", kyle.?.tag_name);
+    try std.testing.expectEqualSlices(u8, "person", kyle_alias.?.tag_name);
     try std.testing.expectEqualSlices(u8, "Jonas", jonas.?.attributes[0].value.?);
+    try std.testing.expectEqualSlices(u8, "Jonas", jonas_alias.?.attributes[0].value.?);
     try std.testing.expectEqualSlices(u8, "Kyle", kyle.?.attributes[0].value.?);
+    try std.testing.expectEqualSlices(u8, "Kyle", kyle_alias.?.attributes[0].value.?);
 
     const jonas_name = tree.children[0].elem.attributeValueByName("name");
+    const jonas_name_alias = tree.children[0].elem.attrValue("name");
     try std.testing.expect(jonas_name != null);
+    try std.testing.expect(jonas_name_alias != null);
     try std.testing.expectEqualSlices(u8, "Jonas", jonas_name.?);
+    try std.testing.expectEqualSlices(u8, "Jonas", jonas_name_alias.?);
 
     const all_people = try tree.elementsByTagNameAlloc(std.testing.allocator, "person");
     defer std.testing.allocator.free(all_people);
