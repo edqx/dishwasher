@@ -5,11 +5,9 @@ const Tree = parse.Tree;
 
 pub const ContentError = error{
     MissingAttribute,
-    UnexpectedAttributeValue,
     MissingAttributeValue,
     MissingChild,
     MissingOption,
-    MissingPatternMatch,
 };
 
 pub const Mode = enum {
@@ -211,11 +209,9 @@ fn PopulateShape(comptime T: type, comptime shape: anytype) type {
                                 attributes,
                             ) catch |e| switch (e) {
                                 error.MissingAttribute,
-                                error.UnexpectedAttributeValue,
                                 error.MissingAttributeValue,
                                 error.MissingChild,
                                 error.MissingOption,
-                                error.MissingPatternMatch,
                                 => null,
                                 else => return e,
                             };
@@ -332,11 +328,9 @@ fn PopulateShape(comptime T: type, comptime shape: anytype) type {
                                     attributes,
                                 ) catch |e| switch (e) {
                                     error.MissingAttribute,
-                                    error.UnexpectedAttributeValue,
                                     error.MissingAttributeValue,
                                     error.MissingChild,
                                     error.MissingOption,
-                                    error.MissingPatternMatch,
                                     => null,
                                     else => return e,
                                 };
@@ -385,8 +379,6 @@ fn PopulateShape(comptime T: type, comptime shape: anytype) type {
                         }
 
                         inline for (shape_fields) |shape_field| {
-                            defer i += 1;
-
                             const base_field = comptime for (struct_fields) |field| {
                                 if (std.mem.eql(u8, field.name, shape_field.name)) {
                                     break field;
@@ -396,6 +388,7 @@ fn PopulateShape(comptime T: type, comptime shape: anytype) type {
                             const shape_field_val = @field(shape, shape_field.name);
                             @field(val.*, base_field.name) = try PopulateShape(base_field.type, shape_field_val)
                                 .initFromTreeImpl(mode, allocator, tree, attributes);
+                            i += 1;
                         }
                     }
                 },
@@ -452,7 +445,7 @@ fn PopulateShape(comptime T: type, comptime shape: anytype) type {
             try fromTreeImpl(.compile_time, undefined, tree, &.{}, val);
         }
 
-        pub fn initFromTreeComptime(comptime tree: Tree) T {
+        pub fn initFromTreeComptime(comptime tree: Tree) !T {
             return comptime try initFromTreeImpl(.compile_time, undefined, tree, &.{});
         }
 
@@ -472,12 +465,14 @@ fn PopulateShape(comptime T: type, comptime shape: anytype) type {
 
         pub fn initFromReader(allocator: std.mem.Allocator, reader: anytype) !OwnedDocument {
             var owned_tree = try parse.fromReader(allocator, reader);
+            errdefer owned_tree.deinit();
             const value = try initFromTreeOwned(owned_tree.arena.allocator(), owned_tree.tree);
             return .{ .owned_tree = owned_tree, .value = value };
         }
 
         pub fn fromSlice(allocator: std.mem.Allocator, slice: []const u8, val: *T) !std.heap.ArenaAllocator {
             var owned_tree = try parse.fromSlice(allocator, slice);
+            errdefer owned_tree.deinit();
             try fromTreeOwned(owned_tree.arena.allocator(), owned_tree.tree, val);
             return owned_tree.arena;
         }
@@ -489,6 +484,7 @@ fn PopulateShape(comptime T: type, comptime shape: anytype) type {
 
         pub fn initFromSlice(allocator: std.mem.Allocator, slice: []const u8) !OwnedDocument {
             var owned_tree = try parse.fromSlice(allocator, slice);
+            errdefer owned_tree.deinit();
             const value = try initFromTreeOwned(owned_tree.arena.allocator(), owned_tree.tree);
             return .{ .owned_tree = owned_tree, .value = value };
         }
@@ -579,7 +575,7 @@ const test_buf =
     \\    Judas
     \\    <job start_date="2019" end_date="2022">software engineeer</job>
     \\    <job start_date="2022" end_date="2023">dishwasher</job>
-    \\    <job start_date="2023" end_date="-">door-to-door salesman</job>
+    \\    <job start_date="2023" end_date="2024">door-to-door salesman</job>
     \\    <house>Nazereth</house>
     \\    <custom_data>
     \\        <temperature unit="celcius">36</temperature>
@@ -635,10 +631,99 @@ test Populate {
     try expectTestBufDocumentValid(document);
 }
 
-test "comptime populate" {
+test "Populate: comptime" {
     @setEvalBranchQuota(8192);
     const tree = comptime parse.fromSliceComptime(test_buf);
-    const document: Document = comptime Populate(Document).initFromTreeComptime(tree);
+    const document: Document = try comptime Populate(Document).initFromTreeComptime(tree);
 
     try expectTestBufDocumentValid(document);
+}
+
+const DogDocument = struct {
+    pub const Dog = struct {
+        pub const xml_shape = .{
+            .name = .{ .attribute, "name" },
+            .ears = .{ .attribute, "ears" },
+            .teeth = .{ .attribute, "teeth" },
+            .temperament = .{ .element, "temperament", .content_trimmed },
+            .colour = .{ .elements, "colour", .content_trimmed },
+        };
+
+        name: []const u8,
+        ears: []const u8,
+        teeth: []const u8,
+        temperament: []const u8,
+        colour: []const []const u8,
+    };
+
+    pub const xml_shape = .{
+        .dogs = .{ .elements, "dog", Dog },
+    };
+
+    dogs: []const Dog,
+};
+
+const test_missing_attribute =
+    \\<dog name="Barney" ears="floppy">
+    \\    <temperament>stoic</temperament>
+    \\    <colour>brown</colour>
+    \\    <colour>white</colour>
+    \\</dog>
+;
+
+test "Populate: error: missing attribute" {
+    try std.testing.expectError(ContentError.MissingAttribute, Populate(DogDocument).initFromSlice(std.testing.allocator, test_missing_attribute));
+}
+
+const test_missing_attribute_value =
+    \\<dog name="Barney" ears="floppy" teeth>
+    \\    <temperament>stoic</temperament>
+    \\    <colour>brown</colour>
+    \\    <colour>white</colour>
+    \\</dog>
+;
+
+test "Populate: error: missing attribute value" {
+    try std.testing.expectError(ContentError.MissingAttributeValue, Populate(DogDocument).initFromSlice(std.testing.allocator, test_missing_attribute_value));
+}
+
+const test_missing_child =
+    \\<dog name="Barney" ears="floppy" teeth="none">
+    \\    <colour>brown</colour>
+    \\    <colour>white</colour>
+    \\</dog>
+;
+
+test "Populate: error: missing child" {
+    try std.testing.expectError(ContentError.MissingChild, Populate(DogDocument).initFromSlice(std.testing.allocator, test_missing_child));
+}
+
+const OptionDocument = union(enum) {
+    pub const xml_shape = .{ .one_of, Shampoo, Microwave };
+
+    pub const Shampoo = struct {
+        pub const xml_shape = .{
+            .scent = .{ .element, "scent", .content_trimmed },
+        };
+        scent: []const u8,
+    };
+
+    pub const Microwave = struct {
+        pub const xml_shape = .{
+            .wattage = .{ .element, "wattage", .content_trimmed },
+        };
+
+        wattage: []const u8,
+    };
+
+    shampoo: Shampoo,
+    microwave: Microwave,
+};
+
+const test_missing_option =
+    \\<dog name="barney"></dog>
+;
+
+test "Populate: missing option" {
+    try std.testing.expectError(ContentError.MissingOption, Populate(OptionDocument).initFromSlice(std.testing.allocator, test_missing_option));
 }
