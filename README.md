@@ -29,6 +29,11 @@ fully.
 
 _All times are averaged over 100 runs, rounded to the nearest 2sf._
 
+## Documentation
+
+Generate documentation for dishwasher with `zig build docs`, will output browser files at `zig-out/docs`. You can serve
+this however you like, for example with Python: `python -m http.server` or with NodeJS: `npx serve`.
+
 ## Usage
 
 Dishwasher has 4 APIs, 3 of which will be most useful.

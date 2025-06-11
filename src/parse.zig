@@ -60,27 +60,42 @@ pub const Diagnostics = struct {
     }
 };
 
+/// Represents a set of XML element, text or comment nodes.
 pub const Tree = struct {
+    /// A tree along with the arena allocator that all allocations were done through, so that
+    /// the entire tree can be easily destroyed.
     pub const Owned = struct {
+        /// The arena used for all allocations in the parsed XML document tree.
         arena: std.heap.ArenaAllocator,
+        /// The parsed XML document as a tree structure.
         tree: Tree,
 
+        /// De-initialise the internal arena, freeing all allocations and invalidating the parsed
+        /// XML document tree.
         pub fn deinit(self: Owned) void {
             self.arena.deinit();
         }
     };
 
+    /// Represents an element, text, or comment node in an XML document.
     pub const Node = union(enum) {
+        /// Represents an element with a tag name in an XML document.
         pub const Elem = struct {
+            /// Represents an attribute on an element, both those without values, e.g. `<button disabled>`,
+            /// and those with values.
             pub const Attr = struct {
                 name: []const u8,
+                /// This is set to `null` if the attribute has no value.
                 value: ?[]const u8,
             };
 
             tag_name: []const u8,
             attributes: []const Attr,
+            /// The sub-tree of the elements containing child elements and text nodes.
             tree: ?Tree,
 
+            /// De-initialise the entire element, including its attributes, child elements
+            /// and text nodes.
             pub fn freeRecursive(self: Elem, allocator: std.mem.Allocator) void {
                 if (self.tree) |tree| tree.freeRecursive(allocator);
                 var i = self.attributes.len;
@@ -95,7 +110,7 @@ pub const Tree = struct {
                 allocator.free(self.tag_name);
             }
 
-            // Get an attribute given its name.
+            /// Get an attribute by its name.
             pub fn attributeByName(self: Elem, needle: []const u8) ?Attr {
                 return for (self.attributes) |attribute| {
                     if (std.mem.eql(u8, attribute.name, needle)) {
@@ -104,39 +119,48 @@ pub const Tree = struct {
                 } else null;
             }
 
-            // Alias for attributeByName
+            /// Alias for `attributeByName`.
             pub fn attr(self: Elem, needle: []const u8) ?Attr {
                 return try self.attributeByName(needle);
             }
 
-            // Get the value of an attribute given its name. Note that if the
-            // attribute has no value, e.g., <button disabled> this will
-            // still return null. Use attr or attrValue in those
-            // cases.
+            /// Get the value of an attribute given its name.
+            ///
+            /// Note that if the attribute has no value, e.g., `<button disabled>` this will
+            /// still return null. Use `attributeByName` or `attr` in those cases.
             pub fn attributeValueByName(self: Elem, needle: []const u8) ?[]const u8 {
                 return (self.attributeByName(needle) orelse return null).value;
             }
 
-            // Alias for attributeValueByName
+            /// Alias for `attributeValueByName`
             pub fn attrValue(self: Elem, needle: []const u8) ?[]const u8 {
                 return self.attributeValueByName(needle);
             }
         };
 
+        /// Represents a piece of text in an XML document. Note that contiguous text sections
+        /// are combined into one.
         pub const Text = struct {
+            /// The inner contents of the text verbatim. This includes all surrounding whitespace. Note that
+            /// in most XML use-cases, for example in HTML, whitespace is essentially collapsed into
+            /// one space. Dishwasher does not do this for you.
+            ///
+            /// Use `trimmed` to get just the text.
             contents: []const u8,
 
             pub fn freeRecursive(self: Text, allocator: std.mem.Allocator) void {
                 allocator.free(self.contents);
             }
 
-            // Return the text without any whitespace at the beginning or end.
+            /// Return the text without any ASCII whitespace at the beginning or end.
             pub fn trimmed(self: Text) []const u8 {
                 return std.mem.trim(u8, self.contents, &std.ascii.whitespace);
             }
         };
 
+        /// Represents a full comment in an XML document.
         pub const Comment = struct {
+            /// The inner contents of the comment verbatim. This includes all surrounding whitespace.
             contents: []const u8,
 
             pub fn freeRecursive(self: Comment, allocator: std.mem.Allocator) void {
@@ -166,7 +190,8 @@ pub const Tree = struct {
         allocator.free(self.children);
     }
 
-    // Find an element child by its tag name
+    /// Find an element child node by its tag name, returns `null` if no elements with that
+    /// tag can not be found.
     pub fn elementByTagName(self: Tree, needle: []const u8) ?Node.Elem {
         return for (self.children) |child| {
             switch (child) {
@@ -180,14 +205,14 @@ pub const Tree = struct {
         } else null;
     }
 
-    // Alias for elementByTagName
+    /// Alias for `elementByTagName`.
     pub fn elem(self: Tree, needle: []const u8) ?Node.Elem {
         return self.elementByTagName(needle);
     }
 
-    // Allocate a slice for all of the element children of a given tag name
-    // To free the returned slice, you can just call allocator.free(elements)
-    // where 'elements' is the returned slice.
+    /// Collate all child elements with a given tag name, allocating a slice to contain them
+    /// all. To free the returned slice, call `allocator.free(elements)`, where `elements`
+    /// is the returned slice.
     pub fn elementsByTagNameAlloc(self: Tree, allocator: std.mem.Allocator, needle: []const u8) ![]Node.Elem {
         var out = std.ArrayList(Node.Elem).init(allocator);
         errdefer out.deinit();
@@ -203,15 +228,16 @@ pub const Tree = struct {
             }
         }
 
-        return out.toOwnedSlice();
+        return try out.toOwnedSlice();
     }
 
-    // Alias for elementsByTagName
+    /// Alias for `elementsByTagNameAlloc`.
     pub fn elemsAlloc(self: Tree, allocator: std.mem.Allocator, needle: []const u8) ![]Node.Elem {
         return try self.elementsByTagNameAlloc(allocator, needle);
     }
 
-    // Get an element by the value of one of its attributes
+    /// Get an element by the value of one of its attributes. Returns `null` if no elements
+    /// with the attribute value can be found.
     pub fn elementByAttributeValue(self: Tree, needle_name: []const u8, needle_value: []const u8) ?Node.Elem {
         return for (self.children) |child| {
             switch (child) {
@@ -226,13 +252,15 @@ pub const Tree = struct {
         } else null;
     }
 
-    // Alias for elementByAttributeValue
+    /// Alias for `elementByAttributeValue`
     pub fn elemByAttr(self: Tree, needle_name: []const u8, needle_value: []const u8) ?Node.Elem {
         return self.elementByAttributeValue(needle_name, needle_value);
     }
 
-    // Return the inner text (not including the elements) of the tree. Note that the
-    // result will be entirely unformatted. Free with allocator.free(result);
+    /// Collate the inner text (not including the elements or comments) of the tree. Note that the
+    /// result will be entirely unformatted, with whitespace uncollapsed.
+    ///
+    /// Free with allocator.free(result);
     pub fn concatTextAlloc(self: Tree, allocator: std.mem.Allocator) ![]const u8 {
         var content_length: usize = 0;
         for (self.children) |child| {
@@ -258,8 +286,11 @@ pub const Tree = struct {
         return combined;
     }
 
-    // Return the inner text (not including the elements) of the tree but without
-    // any whitespace at the start or end. Free with allocator.free(result).
+    /// Collate the inner text (not including the elements or comments) of the tree. Note that the
+    /// result will be entirely unformatted, with whitespace trimmed from the start and beginning, but
+    /// uncollapsed inside.
+    ///
+    /// Free with allocator.free(result);
     pub fn concatTextTrimmedAlloc(self: Tree, allocator: std.mem.Allocator) ![]const u8 {
         const combined = try self.concatTextAlloc(allocator);
         defer allocator.free(combined);
@@ -268,6 +299,8 @@ pub const Tree = struct {
         return try allocator.dupe(u8, trimmed);
     }
 
+    /// Same as `concatTextAlloc` but can be executed on a tree processed at
+    /// compile time.
     pub fn concatTextComptime(self: Tree) []const u8 {
         var out: []const u8 = &.{};
         for (self.children) |child| {
@@ -281,6 +314,8 @@ pub const Tree = struct {
         return out;
     }
 
+    /// Same as `concatTextTrimmedAlloc` but can be executed on a tree processed at
+    /// compile time.
     pub fn concatTextTrimmedComptime(self: Tree) []const u8 {
         const combined = self.concatTextComptime();
         return std.mem.trim(u8, combined, &std.ascii.whitespace);
@@ -791,6 +826,7 @@ fn fromSliceArenaImpl(
     };
 }
 
+/// Parse an entire XML tree from a slice, owning all allocations and tracking parse errors.
 pub fn fromSliceDiagnosticsOwned(
     allocator: std.mem.Allocator,
     slice: []const u8,
@@ -799,6 +835,7 @@ pub fn fromSliceDiagnosticsOwned(
     return try fromSliceImpl(allocator, allocator, slice, diagnostics);
 }
 
+/// Parse an entire XML tree from a slice, with all allocations done through an arena and tracking parse errors.
 pub fn fromSliceDiagnostics(
     allocator: std.mem.Allocator,
     slice: []const u8,
@@ -807,10 +844,12 @@ pub fn fromSliceDiagnostics(
     return try fromSliceArenaImpl(allocator, slice, diagnostics);
 }
 
+/// Parse an entire XML tree from a slice, owning all allocations.
 pub fn fromSliceOwned(allocator: std.mem.Allocator, slice: []const u8) !Tree {
     return try fromSliceImpl(allocator, allocator, slice, null);
 }
 
+/// Parse an entire XML tree from a slice, with all allocations done through an arena.
 pub fn fromSlice(allocator: std.mem.Allocator, slice: []const u8) !Tree.Owned {
     var arena = std.heap.ArenaAllocator.init(allocator);
     errdefer arena.deinit();
@@ -844,6 +883,7 @@ fn fromReaderArenaImpl(
     };
 }
 
+/// Parse an entire XML tree from a reader, owning all allocations and tracking parse errors.
 pub fn fromReaderDiagnosticsOwned(
     allocator: std.mem.Allocator,
     reader: anytype,
@@ -852,6 +892,7 @@ pub fn fromReaderDiagnosticsOwned(
     return try fromReaderImpl(allocator, allocator, reader, diagnostics);
 }
 
+/// Parse an entire XML tree from a reader, with all allocations done through an arena and tracking parse errors.
 pub fn fromReaderDiagnostics(
     allocator: std.mem.Allocator,
     reader: anytype,
@@ -860,10 +901,12 @@ pub fn fromReaderDiagnostics(
     return try fromReaderArenaImpl(allocator, reader, diagnostics);
 }
 
+/// Parse an entire XML tree from a reader, owning all allocations.
 pub fn fromReaderOwned(allocator: std.mem.Allocator, reader: anytype) !Tree {
     return try fromReaderImpl(allocator, allocator, reader, null);
 }
 
+/// Parse an entire XML tree from a reader, with all allocations done through an arena.
 pub fn fromReader(allocator: std.mem.Allocator, reader: anytype) !Tree.Owned {
     var arena = std.heap.ArenaAllocator.init(allocator);
     errdefer arena.deinit();
@@ -871,6 +914,7 @@ pub fn fromReader(allocator: std.mem.Allocator, reader: anytype) !Tree.Owned {
     return fromReaderArenaImpl(allocator, reader, null);
 }
 
+/// Parse an entire XML tree from a slice known at compile time.
 pub fn fromSliceComptime(comptime slice: []const u8) Tree {
     return comptime blk: {
         @setEvalBranchQuota(slice.len * 8); // should be a good upper-limit
@@ -888,7 +932,7 @@ pub fn fromSliceComptime(comptime slice: []const u8) Tree {
 }
 
 const test_buf = "<div betrayed-by=\"judas\">jesus <p>christ</p> lord <amen/></div>";
-pub fn expectTestTreeValid(tree: Tree) !void {
+fn expectTestTreeValid(tree: Tree) !void {
     try std.testing.expectEqual(tree.children.len, 1);
     try std.testing.expect(tree.children[0] == .elem);
     try std.testing.expectEqualSlices(u8, tree.children[0].elem.tag_name, "div");

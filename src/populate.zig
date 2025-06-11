@@ -24,8 +24,12 @@ fn PopulateShape(comptime T: type, comptime shape: anytype) type {
     const cannot_be_applied = "Shape " ++ shape_print ++ " cannot be applied to type " ++ @typeName(T);
 
     return struct {
+        /// Represents an instance of the struct to populate along with the source parsed XML tree
+        /// with an arena containing all allocations.
         pub const OwnedDocument = struct {
+            /// The source parsed XML tree with an arena containing all allocations.
             owned_tree: Tree.Owned,
+            /// The created struct instance, populated with XML data.
             value: T,
 
             pub fn deinit(self: OwnedDocument) void {
@@ -441,28 +445,34 @@ fn PopulateShape(comptime T: type, comptime shape: anytype) type {
             return val;
         }
 
+        /// Fill a struct instance from a parsed XML tree known at compile time.
         pub fn fromTreeComptime(comptime tree: Tree, val: *T) !void {
             try fromTreeImpl(.compile_time, undefined, tree, &.{}, val);
         }
 
+        /// Create the struct from a parsed XML tree known at compile time.
         pub fn initFromTreeComptime(comptime tree: Tree) !T {
             return comptime try initFromTreeImpl(.compile_time, undefined, tree, &.{});
         }
 
+        /// Fill a struct instance from a parsed XML tree, owning all allocations.
         pub fn fromTreeOwned(allocator: std.mem.Allocator, tree: Tree, val: *T) !void {
             try fromTreeImpl(.run_time, allocator, tree, &.{}, val);
         }
 
+        /// Create the struct from a parsed XML tree, owning all allocations.
         pub fn initFromTreeOwned(allocator: std.mem.Allocator, tree: Tree) !T {
             return try initFromTreeImpl(.run_time, allocator, tree, &.{});
         }
 
+        /// Create the struct directly, reading from an XML document, returning an arena managing all allocations.
         pub fn fromReader(allocator: std.mem.Allocator, reader: anytype, val: *T) !std.heap.ArenaAllocator {
             var owned_tree = try parse.fromReader(allocator, reader);
             try fromTreeOwned(owned_tree.arena.allocator(), owned_tree.tree, val);
             return owned_tree.arena;
         }
 
+        /// Create the struct directly, reading from an XML document, with an arena to manage all allocations.
         pub fn initFromReader(allocator: std.mem.Allocator, reader: anytype) !OwnedDocument {
             var owned_tree = try parse.fromReader(allocator, reader);
             errdefer owned_tree.deinit();
@@ -470,6 +480,7 @@ fn PopulateShape(comptime T: type, comptime shape: anytype) type {
             return .{ .owned_tree = owned_tree, .value = value };
         }
 
+        /// Fill a struct instance directly from an XML document slice, returning an arena managing all allocations.
         pub fn fromSlice(allocator: std.mem.Allocator, slice: []const u8, val: *T) !std.heap.ArenaAllocator {
             var owned_tree = try parse.fromSlice(allocator, slice);
             errdefer owned_tree.deinit();
@@ -477,11 +488,13 @@ fn PopulateShape(comptime T: type, comptime shape: anytype) type {
             return owned_tree.arena;
         }
 
+        /// Fill a struct instance directly from an XML document slice known at compile time.
         pub fn fromSliceComptime(slice: []const u8, val: *T) !void {
             const tree = comptime try parse.fromSliceComptime(slice);
             fromTreeComptime(tree, val);
         }
 
+        /// Create the struct directly from an XML slice, with an arena to manage all allocations.
         pub fn initFromSlice(allocator: std.mem.Allocator, slice: []const u8) !OwnedDocument {
             var owned_tree = try parse.fromSlice(allocator, slice);
             errdefer owned_tree.deinit();
@@ -489,6 +502,7 @@ fn PopulateShape(comptime T: type, comptime shape: anytype) type {
             return .{ .owned_tree = owned_tree, .value = value };
         }
 
+        /// Create the struct directly from an XML document slice known at compile time.
         pub fn initFromSliceComptime(comptime slice: []const u8) T {
             const tree = comptime parse.fromSliceComptime(slice);
             return comptime initFromTreeComptime(tree);
@@ -518,6 +532,7 @@ pub fn shapeFromType(comptime T: type) ShapeTypeFromType(T) {
     }
 }
 
+/// Methods for creating and filling structs from data in an XML document.
 pub fn Populate(comptime T: type) type {
     return PopulateShape(T, shapeFromType(T));
 }
