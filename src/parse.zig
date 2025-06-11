@@ -179,6 +179,8 @@ pub const Tree = struct {
         }
     };
 
+    pub const empty: Tree = .{ .children = &.{} };
+
     children: []const Node,
 
     pub fn freeRecursive(self: Tree, allocator: std.mem.Allocator) void {
