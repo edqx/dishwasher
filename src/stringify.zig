@@ -46,7 +46,7 @@ pub fn writeTree(tree: Tree, options: Options, writer: anytype) !void {
 
 test writeTree {
     var tree: Tree = .{ .children = &.{} };
-    var array = std.ArrayList(u8).init(std.testing.allocator);
+    var array = std.array_list.Managed(u8).init(std.testing.allocator);
     defer array.deinit();
 
     writeTree(tree, .{}, array.writer());
