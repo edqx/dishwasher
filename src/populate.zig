@@ -16,6 +16,15 @@ pub const Mode = enum {
 };
 
 fn PopulateShape(comptime T: type, comptime shape: anytype) type {
+    // The format method, internally called by `std.fmt.comptimePrint` up to the Zig
+    // compiler version 0.14.x, had a eval branch quota of two million (2_000_000).
+    //    see: https://github.com/ziglang/zig/blob/6d1f0eca773e688c802e441589495b7bde2f9e3f/lib/std/fmt.zig#L100
+    // Since Zig compiler version 0.15.1 `std.fmt.comptimePrint` uses the new IO API. This means
+    // that `std.fmt.format` was deprecated in favor of `Writer.print`. Due to this change the eval branch quota for
+    // `comptimePrint` is the default (1_000). This is way to small for the data structures usually passed via `shape`.
+    // To fix this we set the eval branch quota ourself, using the quota previously set by `std.fmt.format`.
+    @setEvalBranchQuota(2_000_000);
+
     const dest_type_info: std.builtin.Type = @typeInfo(T);
     const ShapeType = @TypeOf(shape);
     const shape_type_info = @typeInfo(ShapeType);
@@ -647,7 +656,6 @@ test Populate {
 }
 
 test "Populate: comptime" {
-    @setEvalBranchQuota(8192);
     const tree = comptime parse.fromSliceComptime(test_buf);
     const document: Document = try comptime Populate(Document).initFromTreeComptime(tree);
 
