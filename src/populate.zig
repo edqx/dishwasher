@@ -255,7 +255,7 @@ fn PopulateShape(comptime T: type, comptime shape: anytype) type {
                                     val.* = result;
                                 },
                                 .run_time => {
-                                    var result = std.ArrayList(ChildType).init(allocator);
+                                    var result = std.array_list.Managed(ChildType).init(allocator);
                                     errdefer result.deinit();
                                     errdefer {
                                         for (result.items) |item| {
