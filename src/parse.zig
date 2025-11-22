@@ -20,11 +20,11 @@ pub const Diagnostics = struct {
         range: Range,
     };
 
-    defects: std.ArrayList(Defect),
+    defects: std.array_list.Managed(Defect),
 
     pub fn init(allocator: std.mem.Allocator) Diagnostics {
         return .{
-            .defects = std.ArrayList(Defect).init(allocator),
+            .defects = std.array_list.Managed(Defect).init(allocator),
         };
     }
 
@@ -216,7 +216,7 @@ pub const Tree = struct {
     /// all. To free the returned slice, call `allocator.free(elements)`, where `elements`
     /// is the returned slice.
     pub fn elementsByTagNameAlloc(self: Tree, allocator: std.mem.Allocator, needle: []const u8) ![]Node.Elem {
-        var out = std.ArrayList(Node.Elem).init(allocator);
+        var out = std.array_list.Managed(Node.Elem).init(allocator);
         errdefer out.deinit();
 
         for (self.children) |child| {
@@ -438,15 +438,15 @@ pub fn stateMachine(builder: anytype) StateMachine(@typeInfo(@TypeOf(builder)).p
 pub const RuntimeBuilder = struct {
     const TempTree = struct {
         maybe_open_token: ?Scanner.Token,
-        children: std.ArrayList(Tree.Node),
+        children: std.array_list.Managed(Tree.Node),
     };
 
     temp_allocator: std.mem.Allocator,
     data_allocator: std.mem.Allocator,
     maybe_diagnostics: ?*Diagnostics,
 
-    stack: std.ArrayList(TempTree),
-    attributes: ?std.ArrayList(Tree.Node.Elem.Attr),
+    stack: std.array_list.Managed(TempTree),
+    attributes: ?std.array_list.Managed(Tree.Node.Elem.Attr),
 
     pub fn init(
         temp_allocator: std.mem.Allocator,
@@ -455,9 +455,9 @@ pub const RuntimeBuilder = struct {
     ) !RuntimeBuilder {
         const root: TempTree = .{
             .maybe_open_token = null,
-            .children = std.ArrayList(Tree.Node).init(data_allocator),
+            .children = std.array_list.Managed(Tree.Node).init(data_allocator),
         };
-        var stack = try std.ArrayList(TempTree).initCapacity(temp_allocator, 8);
+        var stack = try std.array_list.Managed(TempTree).initCapacity(temp_allocator, 8);
         try stack.append(root);
         return .{
             .temp_allocator = temp_allocator,
@@ -518,7 +518,7 @@ pub const RuntimeBuilder = struct {
     pub fn pushStack(self: *RuntimeBuilder, open_token: Scanner.Token) !void {
         try self.stack.append(.{
             .maybe_open_token = open_token,
-            .children = std.ArrayList(Tree.Node).init(self.data_allocator),
+            .children = std.array_list.Managed(Tree.Node).init(self.data_allocator),
         });
     }
 
@@ -584,7 +584,7 @@ pub const RuntimeBuilder = struct {
 
     pub fn buildAttributes(self: *RuntimeBuilder) !void {
         std.debug.assert(self.attributes == null);
-        self.attributes = std.ArrayList(Tree.Node.Elem.Attr).init(self.data_allocator);
+        self.attributes = std.array_list.Managed(Tree.Node.Elem.Attr).init(self.data_allocator);
     }
 
     pub fn getAttributesOwned(self: *RuntimeBuilder) ![]const Tree.Node.Elem.Attr {
