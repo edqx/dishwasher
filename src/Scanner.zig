@@ -207,6 +207,15 @@ fn nextImpl(self: *Scanner) !?Token {
                 };
             }
 
+            if (try self.reader.peekByte() == '-') {
+                return .{
+                    .kind = .text_chunk,
+                    .inner = try self.reader.take(1),
+                    .start_pos = start_pos,
+                    .end_pos = self.global_cursor,
+                };
+            }
+
             const text_chunk = self.reader.peekDelimiterExclusive('-') catch |e| switch (e) {
                 error.StreamTooLong => try self.reader.peek(self.reader.buffered().len),
                 else => return e,
