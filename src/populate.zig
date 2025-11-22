@@ -435,7 +435,7 @@ fn PopulateShape(comptime T: type, comptime shape: anytype) type {
                 .@"struct" => |structInfo| {
                     inline for (structInfo.fields) |field| {
                         if (field.default_value_ptr) |default_value| {
-                            @field(val, field.name) = @as(*field.type, @constCast(@alignCast(@ptrCast(default_value)))).*;
+                            @field(val, field.name) = @as(*field.type, @ptrCast(@alignCast(@constCast(default_value)))).*;
                         }
                     }
                 },
@@ -648,7 +648,7 @@ test Populate {
 
 test "Populate: comptime" {
     @setEvalBranchQuota(8192);
-    const tree = comptime parse.fromSliceComptime(test_buf);
+    const tree = try parse.fromSliceComptime(test_buf);
     const document: Document = try comptime Populate(Document).initFromTreeComptime(tree);
 
     try expectTestBufDocumentValid(document);

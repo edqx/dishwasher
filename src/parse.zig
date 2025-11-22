@@ -788,7 +788,7 @@ pub const ComptimeBuilder = struct {
 fn fromScannerImpl(
     temp_allocator: std.mem.Allocator,
     data_allocator: std.mem.Allocator,
-    scanner_or_reader: anytype,
+    scanner_or_reader: *Scanner,
     maybe_diagnostics: ?*Diagnostics,
 ) !Tree {
     var builder = try RuntimeBuilder.init(temp_allocator, data_allocator, maybe_diagnostics);
@@ -808,7 +808,8 @@ fn fromSliceImpl(
     slice: []const u8,
     maybe_diagnostics: ?*Diagnostics,
 ) !Tree {
-    var xml_scanner = Scanner.fromSlice(slice);
+    var reader: std.Io.Reader = .fixed(slice);
+    var xml_scanner: Scanner = .{ .reader = &reader };
     return fromScannerImpl(temp_allocator, data_allocator, &xml_scanner, maybe_diagnostics);
 }
 
@@ -862,16 +863,16 @@ pub fn fromSlice(allocator: std.mem.Allocator, slice: []const u8) !Tree.Owned {
 fn fromReaderImpl(
     temp_allocator: std.mem.Allocator,
     data_allocator: std.mem.Allocator,
-    reader: anytype,
+    reader: *std.Io.Reader,
     maybe_diagnostics: ?*Diagnostics,
 ) !Tree {
-    var xml_scanner = Scanner.staticBufferReader(reader);
+    var xml_scanner: Scanner = .{ .reader = reader };
     return fromScannerImpl(temp_allocator, data_allocator, &xml_scanner, maybe_diagnostics);
 }
 
 fn fromReaderArenaImpl(
     allocator: std.mem.Allocator,
-    reader: anytype,
+    reader: *std.Io.Reader,
     maybe_diagnostics: ?*Diagnostics,
 ) !Tree.Owned {
     var arena = std.heap.ArenaAllocator.init(allocator);
@@ -888,7 +889,7 @@ fn fromReaderArenaImpl(
 /// Parse an entire XML tree from a reader, owning all allocations and tracking parse errors.
 pub fn fromReaderDiagnosticsOwned(
     allocator: std.mem.Allocator,
-    reader: anytype,
+    reader: *std.Io.Reader,
     diagnostics: *Diagnostics,
 ) !Tree.Owned {
     return try fromReaderImpl(allocator, allocator, reader, diagnostics);
@@ -897,19 +898,19 @@ pub fn fromReaderDiagnosticsOwned(
 /// Parse an entire XML tree from a reader, with all allocations done through an arena and tracking parse errors.
 pub fn fromReaderDiagnostics(
     allocator: std.mem.Allocator,
-    reader: anytype,
+    reader: *std.Io.Reader,
     diagnostics: *Diagnostics,
 ) !Tree.Owned {
     return try fromReaderArenaImpl(allocator, reader, diagnostics);
 }
 
 /// Parse an entire XML tree from a reader, owning all allocations.
-pub fn fromReaderOwned(allocator: std.mem.Allocator, reader: anytype) !Tree {
+pub fn fromReaderOwned(allocator: std.mem.Allocator, reader: *std.Io.Reader) !Tree {
     return try fromReaderImpl(allocator, allocator, reader, null);
 }
 
 /// Parse an entire XML tree from a reader, with all allocations done through an arena.
-pub fn fromReader(allocator: std.mem.Allocator, reader: anytype) !Tree.Owned {
+pub fn fromReader(allocator: std.mem.Allocator, reader: *std.Io.Reader) !Tree.Owned {
     var arena = std.heap.ArenaAllocator.init(allocator);
     errdefer arena.deinit();
 
@@ -917,11 +918,13 @@ pub fn fromReader(allocator: std.mem.Allocator, reader: anytype) !Tree.Owned {
 }
 
 /// Parse an entire XML tree from a slice known at compile time.
-pub fn fromSliceComptime(comptime slice: []const u8) Tree {
+pub inline fn fromSliceComptime(comptime slice: []const u8) !Tree {
     return comptime blk: {
         @setEvalBranchQuota(slice.len * 8); // should be a good upper-limit
 
-        var scanner = Scanner.fromSlice(slice);
+        var reader: std.Io.Reader = .fixed(slice);
+
+        var scanner: Scanner = .{ .reader = &reader };
         var builder = ComptimeBuilder{};
         var state = stateMachine(&builder);
 
@@ -966,18 +969,18 @@ fn expectTestTreeValid(tree: Tree) !void {
 }
 
 test fromReader {
-    var fba = std.io.fixedBufferStream(test_buf);
+    var fixed_reader: std.Io.Reader = .fixed(test_buf);
 
-    const parsed = try fromReader(std.testing.allocator, fba.reader());
+    const parsed = try fromReader(std.testing.allocator, &fixed_reader);
     defer parsed.deinit();
 
     try expectTestTreeValid(parsed.tree);
 }
 
 test fromReaderOwned {
-    var fba = std.io.fixedBufferStream(test_buf);
+    var fixed_reader: std.Io.Reader = .fixed(test_buf);
 
-    const tree = try fromReaderOwned(std.testing.allocator, fba.reader());
+    const tree = try fromReaderOwned(std.testing.allocator, &fixed_reader);
     defer tree.freeRecursive(std.testing.allocator);
 
     try expectTestTreeValid(tree);
@@ -985,12 +988,12 @@ test fromReaderOwned {
 
 test fromReaderDiagnostics {
     const buf = "<div><p></p>";
-    var fba = std.io.fixedBufferStream(buf);
+    var fixed_reader: std.Io.Reader = .fixed(buf);
 
     var diagnostics = Diagnostics.init(std.testing.allocator);
     defer diagnostics.deinit();
 
-    const parsed = try fromReaderDiagnostics(std.testing.allocator, fba.reader(), &diagnostics);
+    const parsed = try fromReaderDiagnostics(std.testing.allocator, &fixed_reader, &diagnostics);
     defer parsed.deinit();
 
     try std.testing.expectEqual(diagnostics.defects.items.len, 1);
@@ -998,7 +1001,7 @@ test fromReaderDiagnostics {
 
 test fromSliceComptime {
     @setEvalBranchQuota(8192);
-    const tree = fromSliceComptime(test_buf);
+    const tree = try fromSliceComptime(test_buf);
     try expectTestTreeValid(tree);
 }
 

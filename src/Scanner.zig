@@ -3,9 +3,6 @@ const std = @import("std");
 const Scanner = @This();
 
 pub const Error = error{
-    NoSpaceLeft,
-    UnexpectedEof,
-
     UnexpectedToken,
 };
 
@@ -46,124 +43,129 @@ pub const Token = struct {
     end_pos: usize,
 };
 
-buffer: []const u8,
-end_of_input: bool,
-cursor: usize,
-global_cursor: usize,
-
-state: State,
-
-pub fn fromSlice(slice: []const u8) Scanner {
-    return .{
-        .buffer = slice,
-        .end_of_input = true,
-        .cursor = 0,
-        .global_cursor = 0,
-        .state = .default,
-    };
-}
-
-fn peekBytes(self: *Scanner, numBytes: usize) ![]const u8 {
-    if (self.buffer.len < self.cursor + numBytes) {
-        return if (self.end_of_input) return self.buffer[self.cursor..] else Error.NoSpaceLeft;
+// adapted from https://ziglang.org/documentation/master/std/#std.Io.Reader.peekDelimiterInclusive
+pub fn peekDelimiterAnyInclusive(r: *std.Io.Reader, delimiters: []const u8) std.Io.Reader.DelimiterError![]u8 {
+    {
+        const contents = r.buffer[0..r.end];
+        const seek = r.seek;
+        if (std.mem.findAnyPos(u8, contents, seek, delimiters)) |end| {
+            @branchHint(.likely);
+            return contents[seek .. end + 1];
+        }
     }
-    return self.buffer[self.cursor .. self.cursor + numBytes];
+    while (true) {
+        const content_len = r.end - r.seek;
+        if (r.buffer.len - content_len == 0) break;
+        try r.fillMore();
+        const seek = r.seek;
+        const contents = r.buffer[0..r.end];
+        if (std.mem.findAnyPos(u8, contents, seek + content_len, delimiters)) |end| {
+            return contents[seek .. end + 1];
+        }
+    }
+    var failing_writer = std.Io.Writer.failing;
+    while (r.vtable.stream(r, &failing_writer, .limited(1))) |n| {
+        std.debug.assert(n == 0);
+    } else |err| switch (err) {
+        error.WriteFailed => return error.StreamTooLong,
+        error.ReadFailed => |e| return e,
+        error.EndOfStream => |e| return e,
+    }
 }
 
-fn peekChar(self: *Scanner, ahead: usize) !?u8 {
-    const bytes = try self.peekBytes(ahead);
-    if (bytes.len < ahead) return null;
-    return bytes[ahead - 1];
+// adapted from https://ziglang.org/documentation/master/std/#std.Io.Reader.peekDelimiterExclusive
+fn peekDelimiterAnyExclusive(r: *std.Io.Reader, delimiter: []const u8) std.Io.Reader.DelimiterError![]u8 {
+    const result = peekDelimiterAnyInclusive(r, delimiter) catch |err| switch (err) {
+        error.EndOfStream => {
+            const remaining = r.buffer[r.seek..r.end];
+            if (remaining.len == 0) return error.EndOfStream;
+            return remaining;
+        },
+        else => |e| return e,
+    };
+    return result[0 .. result.len - 1];
 }
 
-fn advanceCursor(self: *Scanner, bytes: usize) usize {
-    defer self.global_cursor += bytes;
-    defer self.cursor += bytes;
-    return self.cursor;
+// adapted from https://ziglang.org/documentation/master/std/#std.Io.Reader.takeDelimiterExclusive
+fn takeDelimiterAnyExclusive(r: *std.Io.Reader, delimiter: []const u8) std.Io.Reader.DelimiterError![]u8 {
+    const result = try peekDelimiterAnyExclusive(r, delimiter);
+    r.toss(result.len);
+    return result;
 }
 
-fn setCursor(self: *Scanner, pos: usize) void {
-    self.cursor = pos;
-    self.global_cursor = pos;
+reader: *std.Io.Reader,
+
+global_cursor: usize = 0,
+state: State = .default,
+
+fn canPeekBytes(self: *Scanner, num_bytes: usize) !bool {
+    self.reader.fill(num_bytes) catch |e| switch (e) {
+        error.EndOfStream => return false,
+        else => return e,
+    };
+    return true;
 }
 
 pub fn next(self: *Scanner) !?Token {
+    return self.nextImpl() catch |e| switch (e) {
+        error.EndOfStream => return null,
+        else => return e,
+    };
+}
+
+fn nextImpl(self: *Scanner) !?Token {
     var start_pos = self.global_cursor;
     switch (self.state) {
         .default => {
-            if (try self.peekChar(1) == '<') {
-                if (std.mem.eql(u8, try self.peekBytes(4), "<!--")) {
-                    const initial_pos = self.advanceCursor(4);
-                    errdefer self.setCursor(initial_pos);
+            if (try self.reader.peekByte() == '<') {
+                if (std.mem.eql(u8, try self.reader.peek(1), "<")) {
+                    self.reader.toss(1);
 
-                    self.state = .comment;
-                    errdefer self.state = .default;
+                    if (std.mem.eql(u8, try self.reader.peek(1), "/")) {
+                        self.reader.toss(1);
 
-                    return .{
-                        .kind = .comment_open,
-                        .inner = &.{},
-                        .start_pos = start_pos,
-                        .end_pos = self.global_cursor,
-                    };
-                }
+                        const tag_name = try self.reader.takeDelimiterExclusive('>');
+                        self.state = .default;
 
-                if (std.mem.eql(u8, try self.peekBytes(9), "<!DOCTYPE")) {
-                    const initial_pos = self.advanceCursor(9);
-                    errdefer self.setCursor(initial_pos);
-                    self.state = .{ .elem = .next_attribute };
-                    errdefer self.state = .default;
+                        self.reader.toss(1);
 
-                    return try self.next();
-                }
-                if (std.mem.eql(u8, try self.peekBytes(5), "<?xml")) {
-                    const initial_pos = self.advanceCursor(5);
-                    errdefer self.setCursor(initial_pos);
-
-                    self.state = .{ .meta = .next_attribute };
-                    errdefer self.state = .default;
-
-                    return try self.next();
-                }
-
-                if (std.mem.eql(u8, try self.peekBytes(2), "</")) {
-                    var tag_name_length: usize = 0;
-                    while (true) : (tag_name_length += 1) {
-                        const char = try self.peekChar(2 + tag_name_length + 1) orelse return Error.UnexpectedEof;
-                        switch (char) {
-                            '>' => break,
-                            else => {},
-                        }
+                        return .{
+                            .kind = .element_children_end,
+                            .inner = tag_name,
+                            .start_pos = start_pos,
+                            .end_pos = self.global_cursor,
+                        };
                     }
-                    const tag_name = self.buffer[self.cursor + 2 .. self.cursor + 2 + tag_name_length];
-                    const initial_pos = self.advanceCursor(2 + tag_name_length + 1); // +1 for the closing tag
-                    errdefer self.setCursor(initial_pos);
 
-                    self.state = .default;
-                    errdefer self.state = .default;
+                    if (try self.canPeekBytes(3) and std.mem.eql(u8, try self.reader.peek(3), "!--")) {
+                        self.reader.toss(3);
+                        self.state = .comment;
 
-                    return .{
-                        .kind = .element_children_end,
-                        .inner = tag_name,
-                        .start_pos = start_pos,
-                        .end_pos = self.global_cursor,
-                    };
-                }
-
-                if (std.mem.eql(u8, try self.peekBytes(1), "<")) {
-                    var tag_name_length: usize = 0;
-                    while (true) : (tag_name_length += 1) {
-                        const char = try self.peekChar(1 + tag_name_length + 1) orelse return Error.UnexpectedEof;
-                        switch (char) {
-                            ' ', '\n', '\r', '/', '>' => break,
-                            else => {},
-                        }
+                        return .{
+                            .kind = .comment_open,
+                            .inner = &.{},
+                            .start_pos = start_pos,
+                            .end_pos = self.global_cursor,
+                        };
                     }
-                    const tag_name = self.buffer[self.cursor + 1 .. self.cursor + 1 + tag_name_length];
-                    const initial_pos = self.advanceCursor(1 + tag_name_length);
-                    errdefer self.setCursor(initial_pos);
 
+                    if (try self.canPeekBytes(4) and std.mem.eql(u8, try self.reader.peek(4), "?xml")) {
+                        self.reader.toss(4);
+                        self.state = .{ .meta = .next_attribute };
+
+                        return try self.nextImpl();
+                    }
+
+                    if (try self.canPeekBytes(8) and std.mem.eql(u8, try self.reader.peek(8), "!DOCTYPE")) {
+                        self.reader.toss(8);
+                        self.state = .{ .elem = .next_attribute };
+
+                        return try self.nextImpl();
+                    }
+
+                    const tag_name = try takeDelimiterAnyExclusive(self.reader, " \n\r/>");
+                    if (tag_name.len == 0) return error.UnexpectedToken;
                     self.state = .{ .elem = .next_attribute };
-                    errdefer self.state = .default;
 
                     return .{
                         .kind = .element_open,
@@ -174,25 +176,16 @@ pub fn next(self: *Scanner) !?Token {
                 }
             }
 
-            var text_chunk_length: usize = 0;
-            while (true) : (text_chunk_length += 1) {
-                const char = self.peekChar(text_chunk_length + 1) catch |e| {
-                    switch (e) {
-                        error.NoSpaceLeft => break,
-                        else => return e,
-                    }
-                } orelse break;
-                switch (char) {
-                    '<' => break,
-                    else => {},
-                }
+            if (self.reader.buffered().len == 0) {
+                try self.reader.fillMore();
             }
 
-            if (text_chunk_length == 0) return null;
+            const text_chunk = self.reader.peekDelimiterExclusive('<') catch |e| switch (e) {
+                error.StreamTooLong => try self.reader.peek(self.reader.buffered().len),
+                else => return e,
+            };
 
-            const text_chunk = self.buffer[self.cursor .. self.cursor + text_chunk_length];
-            const initial_pos = self.advanceCursor(text_chunk_length);
-            errdefer self.setCursor(initial_pos);
+            self.reader.toss(text_chunk.len);
 
             return .{
                 .kind = .text_chunk,
@@ -202,12 +195,9 @@ pub fn next(self: *Scanner) !?Token {
             };
         },
         .comment => {
-            if (std.mem.eql(u8, try self.peekBytes(3), "-->")) {
-                const initial_pos = self.advanceCursor(3);
-                errdefer self.setCursor(initial_pos);
-
+            if (std.mem.eql(u8, try self.reader.peek(3), "-->")) {
+                self.reader.toss(3);
                 self.state = .default;
-                errdefer self.state = .comment;
 
                 return .{
                     .kind = .comment_close,
@@ -217,24 +207,12 @@ pub fn next(self: *Scanner) !?Token {
                 };
             }
 
-            var text_chunk_length: usize = 0;
-            while (true) : (text_chunk_length += 1) {
-                if (std.mem.endsWith(u8, try self.peekBytes(text_chunk_length + 3), "-->")) {
-                    break;
-                }
-                _ = self.peekChar(text_chunk_length + 1) catch |e| {
-                    switch (e) {
-                        error.NoSpaceLeft => break,
-                        else => return e,
-                    }
-                } orelse break;
-            }
+            const text_chunk = self.reader.peekDelimiterExclusive('-') catch |e| switch (e) {
+                error.StreamTooLong => try self.reader.peek(self.reader.buffered().len),
+                else => return e,
+            };
 
-            if (text_chunk_length == 0) return null;
-
-            const text_chunk = self.buffer[self.cursor .. self.cursor + text_chunk_length];
-            const initial_pos = self.advanceCursor(text_chunk_length);
-            errdefer self.setCursor(initial_pos);
+            self.reader.toss(text_chunk.len);
 
             return .{
                 .kind = .text_chunk,
@@ -244,29 +222,21 @@ pub fn next(self: *Scanner) !?Token {
             };
         },
         inline .elem, .meta => |elem_state| {
-            var num_whitespace: usize = 0;
-            while (true) : (num_whitespace += 1) {
-                const char = try self.peekChar(num_whitespace + 1) orelse return Error.UnexpectedEof;
+            // remove whitespace
+            while (true) {
+                const char = try self.reader.peekByte();
                 switch (char) {
-                    ' ', '\n', '\r' => {},
+                    ' ', '\n', '\r' => self.reader.toss(1),
                     else => break,
                 }
             }
-            const initial_pos = self.advanceCursor(num_whitespace);
-            errdefer self.setCursor(initial_pos);
-
-            const initial_state = self.state;
 
             start_pos = self.global_cursor;
-            const firstChar = try self.peekChar(1) orelse return Error.UnexpectedEof;
             switch (self.state) {
                 .elem => {
-                    if (std.mem.eql(u8, try self.peekBytes(2), "/>")) {
-                        const initial_pos_2 = self.advanceCursor(2);
-                        errdefer self.setCursor(initial_pos_2);
-
+                    if (std.mem.eql(u8, try self.reader.peek(2), "/>")) {
+                        self.reader.toss(2);
                         self.state = .default;
-                        errdefer self.state = initial_state;
 
                         return .{
                             .kind = .element_self_end,
@@ -276,12 +246,9 @@ pub fn next(self: *Scanner) !?Token {
                         };
                     }
 
-                    if (firstChar == '>') {
-                        const initial_pos_2 = self.advanceCursor(1);
-                        errdefer self.setCursor(initial_pos_2);
-
+                    if (try self.reader.peekByte() == '>') {
+                        self.reader.toss(1);
                         self.state = .default;
-                        errdefer self.state = initial_state;
 
                         return .{
                             .kind = .element_close,
@@ -292,14 +259,11 @@ pub fn next(self: *Scanner) !?Token {
                     }
                 },
                 .meta => {
-                    if (std.mem.eql(u8, try self.peekBytes(2), "?>")) {
-                        const initial_pos_2 = self.advanceCursor(2);
-                        errdefer self.setCursor(initial_pos_2);
-
+                    if (std.mem.eql(u8, try self.reader.peek(2), "?>")) {
+                        self.reader.toss(2);
                         self.state = .default;
-                        errdefer self.state = initial_state;
 
-                        return try self.next();
+                        return try self.nextImpl();
                     }
                 },
                 else => unreachable,
@@ -307,44 +271,30 @@ pub fn next(self: *Scanner) !?Token {
 
             switch (elem_state) {
                 .next_attribute => {
-                    var attr_name_length: usize = 0;
-                    while (true) : (attr_name_length += 1) {
-                        const char = try self.peekChar(attr_name_length + 1) orelse return Error.UnexpectedEof;
-                        switch (char) {
-                            ' ', '\n', '\r', '=', '/', '>' => break,
-                            else => {},
-                        }
-                    }
-                    if (attr_name_length == 0)
-                        return Error.UnexpectedToken;
+                    const attr_name = try takeDelimiterAnyExclusive(self.reader, " \n\r=/>");
+                    if (attr_name.len == 0) return error.UnexpectedToken;
 
-                    const attr_name = self.buffer[self.cursor .. self.cursor + attr_name_length];
-                    const initial_pos_2 = self.advanceCursor(attr_name_length);
-                    errdefer self.setCursor(initial_pos_2);
-
-                    var num_whitespace_2: usize = 0;
-                    while (true) : (num_whitespace_2 += 1) {
-                        const char = try self.peekChar(num_whitespace_2 + 1) orelse return Error.UnexpectedEof;
+                    // remove whitespace
+                    while (true) {
+                        const char = try self.reader.peekByte();
                         switch (char) {
-                            ' ', '\n', '\r' => {},
+                            ' ', '\n', '\r' => self.reader.toss(1),
                             else => break,
                         }
                     }
-                    const initial_pos_3 = self.advanceCursor(num_whitespace_2);
-                    errdefer self.setCursor(initial_pos_3);
 
                     const name_end_pos = self.global_cursor;
 
-                    const has_value = (try self.peekChar(1) orelse return Error.UnexpectedEof) == '=';
-                    const initial_pos_4 = self.advanceCursor(if (has_value) 1 else 0);
-                    errdefer self.setCursor(initial_pos_4);
+                    const has_value = try self.reader.peekByte() == '=';
+                    if (has_value) {
+                        self.reader.toss(1);
+                    }
 
                     self.state = switch (self.state) {
                         .elem => .{ .elem = if (has_value) .attribute_value else .next_attribute },
                         .meta => .{ .meta = if (has_value) .attribute_value else .next_attribute },
                         else => unreachable,
                     };
-                    errdefer self.state = initial_state;
 
                     return .{
                         .kind = switch (self.state) {
@@ -358,29 +308,18 @@ pub fn next(self: *Scanner) !?Token {
                     };
                 },
                 .attribute_value => {
-                    if (firstChar == '"' or firstChar == '\'') {
-                        const initial_pos_2 = self.advanceCursor(1);
-                        errdefer self.setCursor(initial_pos_2);
+                    const peek = try self.reader.peekByte();
+                    if (peek == '"' or peek == '\'') {
+                        self.reader.toss(1);
 
-                        var attr_value_length: usize = 0;
-                        while (true) : (attr_value_length += 1) {
-                            const char = try self.peekChar(attr_value_length + 1) orelse return Error.UnexpectedEof;
-                            switch (char) {
-                                '"' => if (firstChar == '"') break,
-                                '\'' => if (firstChar == '\'') break,
-                                else => {},
-                            }
-                        }
-                        const attr_value = self.buffer[self.cursor .. self.cursor + attr_value_length];
-                        const initial_pos_3 = self.advanceCursor(attr_value_length + 1);
-                        errdefer self.setCursor(initial_pos_3);
+                        const attr_value = try self.reader.takeDelimiterExclusive(peek);
+                        self.reader.toss(1);
 
                         self.state = switch (self.state) {
                             .elem => .{ .elem = .next_attribute },
                             .meta => .{ .meta = .next_attribute },
                             else => unreachable,
                         };
-                        errdefer self.state = initial_state;
 
                         return .{
                             .kind = switch (self.state) {
@@ -394,25 +333,8 @@ pub fn next(self: *Scanner) !?Token {
                         };
                     }
 
-                    var attr_value_length: usize = 0;
-                    while (true) : (attr_value_length += 1) {
-                        const char = try self.peekChar(attr_value_length + 1) orelse return Error.UnexpectedEof;
-                        switch (char) {
-                            ' ', '\n', '\r', '/', '>' => break,
-                            '?' => {
-                                if (self.state == .meta and try self.peekChar(attr_value_length + 2) == '>') {
-                                    break;
-                                }
-                            },
-                            else => {},
-                        }
-                    }
-                    if (attr_value_length == 0)
-                        return Error.UnexpectedToken;
-
-                    const attr_value = self.buffer[self.cursor .. self.cursor + attr_value_length];
-                    const initial_pos_2 = self.advanceCursor(attr_value_length);
-                    errdefer self.setCursor(initial_pos_2);
+                    const attr_value = try takeDelimiterAnyExclusive(self.reader, " \n\r/>?");
+                    if (attr_value.len == 0) return error.UnexpectedToken;
 
                     return .{
                         .kind = switch (self.state) {
@@ -432,56 +354,4 @@ pub fn next(self: *Scanner) !?Token {
         },
     }
     return null;
-}
-
-pub fn StaticBufferReader(comptime ReaderType: type, comptime bufferSize: usize) type {
-    return struct {
-        const _Reader = @This();
-
-        const ReaderError = error{BufferNotLargeEnough};
-
-        buffer: [bufferSize]u8,
-        reader: ReaderType,
-        scanner: Scanner,
-
-        pub fn init(inner: ReaderType) _Reader {
-            return _Reader{
-                .buffer = undefined,
-                .reader = inner,
-                .scanner = .{
-                    .buffer = &.{},
-                    .cursor = 0,
-                    .global_cursor = 0,
-                    .state = .default,
-                    .end_of_input = false,
-                },
-            };
-        }
-
-        pub fn next(self: *_Reader) !?Scanner.Token {
-            return self.scanner.next() catch |e| switch (e) {
-                error.NoSpaceLeft => {
-                    try self.refillBuffer();
-                    return self.scanner.next() catch |e2| switch (e2) {
-                        error.NoSpaceLeft => ReaderError.BufferNotLargeEnough,
-                        else => return e2,
-                    };
-                },
-                else => return e,
-            };
-        }
-
-        fn refillBuffer(self: *_Reader) !void {
-            const remaining = self.scanner.buffer.len - self.scanner.cursor;
-            std.mem.copyForwards(u8, self.buffer[0..remaining], self.buffer[self.scanner.cursor .. self.scanner.cursor + remaining]);
-            const bytesRead = try self.reader.readAll(self.buffer[remaining..]);
-            self.scanner.buffer = self.buffer[0 .. remaining + bytesRead];
-            self.scanner.cursor = 0;
-            self.scanner.end_of_input = bytesRead != bufferSize - remaining;
-        }
-    };
-}
-
-pub fn staticBufferReader(inner: anytype) StaticBufferReader(@TypeOf(inner), 1024) {
-    return StaticBufferReader(@TypeOf(inner), 1024).init(inner);
 }
