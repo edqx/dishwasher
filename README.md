@@ -2,6 +2,8 @@
 
 A fairly fast XML parser for [Zig](https://ziglang.org).
 
+**For those on Zig 0.15.2, check out the [0.15.2](https://github.com/edqx/dishwasher/tree/0.15.2) branch**
+
 Note that this parser isn't strictly spec-compliant, however it will probably
 work with most well-formed xml documents.
 
