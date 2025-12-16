@@ -759,6 +759,32 @@ pub const ComptimeBuilder = struct {
             }},
         }};
     }
+    
+    pub fn addCdata(self: *ComptimeBuilder) !void {
+        std.debug.assert(self.stack.len > 0);
+        const last = self.stack[self.stack.len - 1];
+        const temp_children: []const Tree.Node = if (last.children.len == 0) &.{} else last.children;
+        self.stack = self.stack[0 .. self.stack.len - 1] ++ .{ComptimeBuilder.TempTree{
+            .maybe_open_token = last.maybe_open_token,
+            .children = temp_children ++ .{Tree.Node{
+                .cdata = .{ .contents = &.{} },
+            }},
+        }};
+    }
+
+    pub fn closeCdata(self: *ComptimeBuilder) !void {
+        std.debug.assert(self.stack.len > 0);
+        const last = self.stack[self.stack.len - 1];
+        std.debug.assert(last.children.len > 0);
+        const temp_children: []const Tree.Node = if (last.children.len == 0) &.{} else last.children;
+        std.debug.assert(last.children[last.children.len - 1] == .cdata);
+        self.stack = self.stack[0 .. self.stack.len - 1] ++ .{ComptimeBuilder.TempTree{
+            .maybe_open_token = last.maybe_open_token,
+            .children = temp_children ++ .{Tree.Node{
+                .text = .{ .contents = &.{} },
+            }},
+        }};
+    }
 
     pub fn appendTextChunk(self: *ComptimeBuilder, text_content: []const u8) !void {
         std.debug.assert(self.stack.len > 0);
@@ -766,7 +792,7 @@ pub const ComptimeBuilder = struct {
         if (last.children.len > 0) {
             const last_node = last.children[last.children.len - 1];
             switch (last_node) {
-                inline .text, .comment => |text_node, tag| {
+                inline .text, .comment, .cdata => |text_node, tag| {
                     const previous_contents: []const u8 = if (text_node.contents.len > 0) text_node.contents else &.{};
                     const contents = previous_contents ++ text_content;
                     self.stack = self.stack[0 .. self.stack.len - 1] ++ .{ComptimeBuilder.TempTree{
@@ -775,6 +801,7 @@ pub const ComptimeBuilder = struct {
                             switch (tag) {
                                 .text => Tree.Node{ .text = .{ .contents = contents } },
                                 .comment => Tree.Node{ .comment = .{ .contents = contents } },
+                                .cdata => Tree.Node{ .cdata = .{ .contents = contents } },
                                 else => unreachable,
                             },
                         },

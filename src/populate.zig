@@ -316,31 +316,6 @@ fn PopulateShape(comptime T: type, comptime shape: anytype) type {
                                 elem.attributes,
                                 val,
                             );
-                        } else if (struct_info.fields.len == 2 and shape[0] == .cdata) {
-                            const tag_name = shape[1];
-
-                            const elem: Tree.Node.Elem = for (tree.children) |child| {
-                                switch (child) {
-                                    .elem => |elem_child| {
-                                        if (std.mem.eql(u8, elem_child.tag_name, tag_name)) {
-                                            break elem_child;
-                                        }
-                                    },
-                                    else => {},
-                                }
-                            } else return ContentError.MissingChild;
-
-                            const cdata_child = for (elem.tree.?.children) |child| {
-                                switch (child) {
-                                    .cdata => |cdata_child| break cdata_child,
-                                    else => {},
-                                }
-                            } else return ContentError.MissingCdata;
-
-                            val.* = switch (mode) {
-                                .compile_time => cdata_child.contents,
-                                .run_time => try allocator.dupe(u8, cdata_child.contents),
-                            };
                         } else if (struct_info.fields.len > 2 and shape[0] == .one_of) {
                             if (dest_type_info != .@"union") {
                                 @compileError(cannot_be_applied ++ ", must be a union type");
@@ -455,6 +430,18 @@ fn PopulateShape(comptime T: type, comptime shape: anytype) type {
                                 };
                             },
                         }
+                    } else if (shape == .cdata) {
+                        const cdata_child: Tree.Node.Cdata = for (tree.children) |child| {
+                            switch (child) {
+                                .cdata => |cdata_child| break cdata_child,
+                                else => {},
+                            }
+                        } else return ContentError.MissingCdata;
+
+                        val.* = switch (mode) {
+                            .compile_time => cdata_child.contents,
+                            .run_time => try allocator.dupe(u8, cdata_child.contents),
+                        };
                     }
                 },
                 else => @compileError("Unknown shape type " ++ shape_print),
@@ -780,32 +767,41 @@ test "Populate: missing option" {
     try std.testing.expectError(ContentError.MissingOption, Populate(OptionDocument).initFromSlice(std.testing.allocator, test_missing_option));
 }
 
-test "Populate: with CDATA" {
-    const test_payload =
-        \\<item>
-        \\  <title>Title #1</title>
-        \\  <data><![CDATA[<a>foobar<br/>]]></data>
-        \\</item>
-    ;
+const test_cdata_payload =
+    \\<item>
+    \\  <title>Title #1</title>
+    \\  <data><![CDATA[<a>foobar<br/>]]></data>
+    \\</item>
+;
 
-    const CdataDocument = struct {
-        pub const Item = struct {
-            pub const xml_shape = .{
-                .text = .{ .cdata, "data" },
-            };
-
-            text: []const u8,
-        };
-
+const CdataDocument = struct {
+    pub const Item = struct {
         pub const xml_shape = .{
-            .item = .{ .element, "item", Item },
+            .text = .{ .element, "data", .cdata },
         };
 
-        item: Item,
+        text: []const u8,
     };
 
-    const document = try Populate(CdataDocument).initFromSlice(std.testing.allocator, test_payload);
+    pub const xml_shape = .{
+        .item = .{ .element, "item", Item },
+    };
+
+    item: Item,
+};
+
+test "Populate: with CDATA" {
+
+    const document = try Populate(CdataDocument).initFromSlice(std.testing.allocator, test_cdata_payload);
     defer document.deinit();
 
     try std.testing.expectEqualStrings("<a>foobar<br/>", document.value.item.text);
+}
+
+test "Populate: comptime with CDATA" {
+    @setEvalBranchQuota(8192);
+    const tree = try parse.fromSliceComptime(test_cdata_payload);
+    const document: CdataDocument = try comptime Populate(CdataDocument).initFromTreeComptime(tree);
+
+    try std.testing.expectEqualStrings("<a>foobar<br/>", document.item.text);
 }
