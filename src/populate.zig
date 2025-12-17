@@ -8,6 +8,7 @@ pub const ContentError = error{
     MissingAttributeValue,
     MissingChild,
     MissingOption,
+    MissingCdata,
 };
 
 pub const Mode = enum {
@@ -84,6 +85,8 @@ fn PopulateShape(comptime T: type, comptime shape: anytype) type {
                         } else if (struct_info.fields.len == 3 and shape[0] == .element) {
                             const child_shape = shape[2];
                             PopulateShape(T, child_shape).deinit(allocator, val);
+                        } else if (struct_info.fields.len == 2 and shape[0] == .cdata) {
+                            allocator.free(val);
                         } else if (struct_info.fields.len > 2 and shape[0] == .one_of) {
                             const union_fields = dest_type_info.@"union".fields;
                             inline for (union_fields, 0..) |field, i| {
@@ -427,6 +430,18 @@ fn PopulateShape(comptime T: type, comptime shape: anytype) type {
                                 };
                             },
                         }
+                    } else if (shape == .cdata) {
+                        const cdata_child: Tree.Node.Cdata = for (tree.children) |child| {
+                            switch (child) {
+                                .cdata => |cdata_child| break cdata_child,
+                                else => {},
+                            }
+                        } else return ContentError.MissingCdata;
+
+                        val.* = switch (mode) {
+                            .compile_time => cdata_child.contents,
+                            .run_time => try allocator.dupe(u8, cdata_child.contents),
+                        };
                     }
                 },
                 else => @compileError("Unknown shape type " ++ shape_print),
@@ -750,4 +765,43 @@ const test_missing_option =
 
 test "Populate: missing option" {
     try std.testing.expectError(ContentError.MissingOption, Populate(OptionDocument).initFromSlice(std.testing.allocator, test_missing_option));
+}
+
+const test_cdata_payload =
+    \\<item>
+    \\  <title>Title #1</title>
+    \\  <data><![CDATA[<a>foobar<br/>]]></data>
+    \\</item>
+;
+
+const CdataDocument = struct {
+    pub const Item = struct {
+        pub const xml_shape = .{
+            .text = .{ .element, "data", .cdata },
+        };
+
+        text: []const u8,
+    };
+
+    pub const xml_shape = .{
+        .item = .{ .element, "item", Item },
+    };
+
+    item: Item,
+};
+
+test "Populate: with CDATA" {
+
+    const document = try Populate(CdataDocument).initFromSlice(std.testing.allocator, test_cdata_payload);
+    defer document.deinit();
+
+    try std.testing.expectEqualStrings("<a>foobar<br/>", document.value.item.text);
+}
+
+test "Populate: comptime with CDATA" {
+    @setEvalBranchQuota(8192);
+    const tree = try parse.fromSliceComptime(test_cdata_payload);
+    const document: CdataDocument = try comptime Populate(CdataDocument).initFromTreeComptime(tree);
+
+    try std.testing.expectEqualStrings("<a>foobar<br/>", document.item.text);
 }

@@ -168,9 +168,20 @@ pub const Tree = struct {
             }
         };
 
+        /// Represents CDATA in an XML document.
+        pub const Cdata = struct {
+            /// The inner contents of the CDATA block verbatim. This includes all surrounding whitespace.
+            contents: []const u8,
+
+            pub fn freeRecursive(self: Cdata, allocator: std.mem.Allocator) void {
+                allocator.free(self.contents);
+            }
+        };
+
         elem: Elem,
         text: Text,
         comment: Comment,
+        cdata: Cdata,
 
         pub fn freeRecursive(self: Node, allocator: std.mem.Allocator) void {
             switch (self) {
@@ -381,6 +392,12 @@ pub fn StateMachine(comptime Builder: type) type {
                     .comment_close => {
                         try self.builder.closeComment();
                     },
+                    .cdata_open => {
+                        try self.builder.addCdata();
+                    },
+                    .cdata_close => {
+                        try self.builder.closeCdata();
+                    },
                     .meta_attribute => {},
                     .meta_attribute_value => {},
                     .doctype => {},
@@ -560,13 +577,31 @@ pub const RuntimeBuilder = struct {
         } });
     }
 
+    pub fn addCdata(self: *RuntimeBuilder) !void {
+        std.debug.assert(self.stack.items.len > 0);
+        const last = &self.stack.items[self.stack.items.len - 1];
+        try last.children.append(.{
+            .cdata = .{ .contents = &.{} },
+        });
+    }
+
+    pub fn closeCdata(self: *RuntimeBuilder) !void {
+        std.debug.assert(self.stack.items.len > 0);
+        const last = &self.stack.items[self.stack.items.len - 1];
+        std.debug.assert(last.children.items.len > 0);
+        std.debug.assert(last.children.items[last.children.items.len - 1] == .cdata);
+        try last.children.append(.{ .text = .{
+            .contents = &.{},
+        } });
+    }
+
     pub fn appendTextChunk(self: *RuntimeBuilder, text_content: []const u8) !void {
         std.debug.assert(self.stack.items.len > 0);
         const last = &self.stack.items[self.stack.items.len - 1];
         if (last.children.items.len > 0) {
             const last_node = &last.children.items[last.children.items.len - 1];
             switch (last_node.*) {
-                inline .text, .comment => |*text_node| {
+                inline .text, .comment, .cdata => |*text_node| {
                     const concat = try self.data_allocator.alloc(u8, text_node.contents.len + text_content.len);
                     @memcpy(concat[0..text_node.contents.len], text_node.contents);
                     @memcpy(concat[text_node.contents.len..], text_content);
@@ -724,6 +759,32 @@ pub const ComptimeBuilder = struct {
             }},
         }};
     }
+    
+    pub fn addCdata(self: *ComptimeBuilder) !void {
+        std.debug.assert(self.stack.len > 0);
+        const last = self.stack[self.stack.len - 1];
+        const temp_children: []const Tree.Node = if (last.children.len == 0) &.{} else last.children;
+        self.stack = self.stack[0 .. self.stack.len - 1] ++ .{ComptimeBuilder.TempTree{
+            .maybe_open_token = last.maybe_open_token,
+            .children = temp_children ++ .{Tree.Node{
+                .cdata = .{ .contents = &.{} },
+            }},
+        }};
+    }
+
+    pub fn closeCdata(self: *ComptimeBuilder) !void {
+        std.debug.assert(self.stack.len > 0);
+        const last = self.stack[self.stack.len - 1];
+        std.debug.assert(last.children.len > 0);
+        const temp_children: []const Tree.Node = if (last.children.len == 0) &.{} else last.children;
+        std.debug.assert(last.children[last.children.len - 1] == .cdata);
+        self.stack = self.stack[0 .. self.stack.len - 1] ++ .{ComptimeBuilder.TempTree{
+            .maybe_open_token = last.maybe_open_token,
+            .children = temp_children ++ .{Tree.Node{
+                .text = .{ .contents = &.{} },
+            }},
+        }};
+    }
 
     pub fn appendTextChunk(self: *ComptimeBuilder, text_content: []const u8) !void {
         std.debug.assert(self.stack.len > 0);
@@ -731,7 +792,7 @@ pub const ComptimeBuilder = struct {
         if (last.children.len > 0) {
             const last_node = last.children[last.children.len - 1];
             switch (last_node) {
-                inline .text, .comment => |text_node, tag| {
+                inline .text, .comment, .cdata => |text_node, tag| {
                     const previous_contents: []const u8 = if (text_node.contents.len > 0) text_node.contents else &.{};
                     const contents = previous_contents ++ text_content;
                     self.stack = self.stack[0 .. self.stack.len - 1] ++ .{ComptimeBuilder.TempTree{
@@ -740,6 +801,7 @@ pub const ComptimeBuilder = struct {
                             switch (tag) {
                                 .text => Tree.Node{ .text = .{ .contents = contents } },
                                 .comment => Tree.Node{ .comment = .{ .contents = contents } },
+                                .cdata => Tree.Node{ .cdata = .{ .contents = contents } },
                                 else => unreachable,
                             },
                         },
@@ -1072,4 +1134,20 @@ test Tree {
 
     try std.testing.expectEqualSlices(u8, "\n    this is a gap!!!    \n    \n    \n    ", text);
     try std.testing.expectEqualSlices(u8, "this is a gap!!!", text2);
+}
+
+test "parsing CDATA" {
+    const payload =
+        \\<item>
+        \\  <title>Title #1</title>
+        \\  <data><![CDATA[<a>foobar]]<br/>]]></data>
+        \\</item>
+    ;
+
+    const result = try fromSlice(std.testing.allocator, payload);
+    defer result.deinit();
+
+    const item_tag = result.tree.elementByTagName("item").?;
+    const data_tag = item_tag.tree.?.elementByTagName("data").?;
+    try std.testing.expectEqualStrings("<a>foobar]]<br/>", data_tag.tree.?.children[0].cdata.contents);
 }

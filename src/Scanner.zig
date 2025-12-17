@@ -31,6 +31,8 @@ pub const Token = struct {
         element_attribute_value,
         comment_open,
         comment_close,
+        cdata_open,
+        cdata_close,
         meta_attribute,
         meta_attribute_value,
         doctype,
@@ -161,6 +163,18 @@ fn nextImpl(self: *Scanner) !?Token {
                         self.state = .{ .elem = .next_attribute };
 
                         return try self.nextImpl();
+                    }
+
+                    if (try self.canPeekBytes(8) and std.mem.eql(u8, try self.reader.peek(8), "![CDATA[")) {
+                        self.reader.toss(8);
+                        self.state = .{ .cdata = .{} };
+
+                        return .{
+                            .kind = .cdata_open,
+                            .inner = &.{},
+                            .start_pos = start_pos,
+                            .end_pos = self.global_cursor,
+                        };
                     }
 
                     const tag_name = try takeDelimiterAnyExclusive(self.reader, " \n\r/>");
@@ -358,8 +372,41 @@ fn nextImpl(self: *Scanner) !?Token {
                 },
             }
         },
-        .cdata => |cdata_details| {
-            _ = cdata_details;
+        .cdata => {
+            if (std.mem.eql(u8, try self.reader.peek(3), "]]>")) {
+                self.reader.toss(3);
+                self.state = .default;
+
+                return .{
+                    .kind = .cdata_close,
+                    .inner = &.{},
+                    .start_pos = start_pos,
+                    .end_pos = self.global_cursor,
+                };
+            }
+
+            if (try self.reader.peekByte() == ']') {
+                return .{
+                    .kind = .text_chunk,
+                    .inner = try self.reader.take(1),
+                    .start_pos = start_pos,
+                    .end_pos = self.global_cursor,
+                };
+            }
+
+            const text_chunk = self.reader.peekDelimiterExclusive(']') catch |e| switch (e) {
+                error.StreamTooLong => try self.reader.peek(self.reader.buffered().len),
+                else => return e,
+            };
+
+            self.reader.toss(text_chunk.len);
+
+            return .{
+                .kind = .text_chunk,
+                .inner = text_chunk,
+                .start_pos = start_pos,
+                .end_pos = self.global_cursor,
+            };
         },
     }
     return null;
