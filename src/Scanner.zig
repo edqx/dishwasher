@@ -50,7 +50,7 @@ pub fn peekDelimiterAnyInclusive(r: *std.Io.Reader, delimiters: []const u8) std.
     {
         const contents = r.buffer[0..r.end];
         const seek = r.seek;
-        if (std.mem.indexOfAnyPos(u8, contents, seek, delimiters)) |end| {
+        if (std.mem.findAnyPos(u8, contents, seek, delimiters)) |end| {
             @branchHint(.likely);
             return contents[seek .. end + 1];
         }
@@ -61,7 +61,7 @@ pub fn peekDelimiterAnyInclusive(r: *std.Io.Reader, delimiters: []const u8) std.
         try r.fillMore();
         const seek = r.seek;
         const contents = r.buffer[0..r.end];
-        if (std.mem.indexOfAnyPos(u8, contents, seek + content_len, delimiters)) |end| {
+        if (std.mem.findAnyPos(u8, contents, seek + content_len, delimiters)) |end| {
             return contents[seek .. end + 1];
         }
     }
